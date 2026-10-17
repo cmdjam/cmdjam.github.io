@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Tessera Day</title>
+<meta name="description" content="Time tracking as a mosaic: paint your day in coloured tiles." />
+<meta name="theme-color" content="#ECEFF3" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Tessera" />
+<link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <span class="eyebrow" id="eyebrow">Tessera Day</span>
+      <h1 id="title">&nbsp;</h1>
+    </div>
+    <div class="actions">
+      <div class="nav">
+        <button type="button" class="btn icon" id="prev" aria-label="Previous" title="Previous (←)">‹</button>
+        <button type="button" class="btn" id="today" title="Today (T)">Today</button>
+        <button type="button" class="btn icon" id="next" aria-label="Next" title="Next (→)">›</button>
+      </div>
+      <button type="button" class="btn icon" id="settingsBtn" aria-label="Settings" title="Settings and data">⚙</button>
+    </div>
+  </header>
+  <nav class="seg tabs" id="tabs" aria-label="Views">
+    <a href="#/day" data-view="day">Day</a>
+    <a href="#/week" data-view="week">Week</a>
+    <a href="#/mosaic" data-view="mosaic">Mosaic</a>
+  </nav>
+  <main id="view"></main>
+</div>
+<dialog id="catDialog" class="modal"></dialog>
+<dialog id="settingsDialog" class="modal"></dialog>
+<dialog id="askDialog" class="modal"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite" popover="manual"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
