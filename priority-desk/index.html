@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Priority Desk</title>
+<meta name="description" content="Eisenhower-matrix task board: sort tasks by urgency and importance." />
+<meta name="theme-color" content="#ECEFF3" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Priorities" />
+<style>
+  :root{
+    --paper:#ECEFF3;
+    --panel:#FFFFFF;
+    --ink:#1B2430;
+    --muted:#5B6675;
+    --faint:#8A93A0;
+    --hair:#D5DBE2;
+    --hair-strong:#C3CAD3;
+    --grid:rgba(27,36,48,0.045);
+    --q1:#C7452F;   /* do now */
+    --q2:#1F6F6B;   /* schedule */
+    --q3:#7A5BA6;   /* delegate */
+    --q4:#8A93A0;   /* drop */
+    --radius:10px;
+    --shadow:0 1px 2px rgba(27,36,48,.06), 0 6px 18px rgba(27,36,48,.06);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    background-color:var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px;
+    -webkit-font-smoothing:antialiased;
+    line-height:1.4;
+  }
+  .wrap{max-width:1280px;margin:0 auto;padding:18px clamp(12px,3vw,28px) 60px;}
+
+  /* ---------- top bar ---------- */
+  .topbar{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px;}
+  .brand{display:flex;flex-direction:column;gap:2px;}
+  .brand .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);}
+  .brand h1{margin:0;font-size:clamp(22px,3.4vw,30px);font-weight:800;letter-spacing:-.02em;}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+
+  button,select{font-family:inherit;color:var(--ink);}
+  .btn{
+    appearance:none;border:1px solid var(--hair-strong);background:var(--panel);
+    padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;line-height:1;transition:border-color .15s,background .15s,transform .05s;
+  }
+  .btn:hover{border-color:var(--ink);}
+  .btn:active{transform:translateY(1px);}
+  .btn.ghost{background:var(--panel);}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .btn .k{font-family:var(--mono);font-size:14px;}
+  .seg{display:inline-flex;border:1px solid var(--hair-strong);border-radius:8px;overflow:hidden;background:var(--panel);}
+  .seg label{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:7px 10px;cursor:pointer;color:var(--muted);}
+  .seg input{display:none;}
+  .seg input:checked + label{background:var(--ink);color:#fff;}
+
+  .viewpick{display:flex;align-items:center;gap:8px;}
+  .viewpick select{
+    border:1px solid var(--hair-strong);background:var(--panel);border-radius:8px;
+    padding:7px 28px 7px 10px;font-size:13px;font-weight:600;cursor:pointer;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%235B6675'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;
+  }
+
+  /* ---------- inbox ---------- */
+  .inbox{
+    background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:12px 14px;margin-bottom:16px;
+  }
+  .inbox-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+  .label{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);}
+  .count{font-family:var(--mono);font-size:11px;color:var(--faint);border:1px solid var(--hair);border-radius:99px;padding:1px 7px;}
+  .addrow{display:flex;gap:8px;margin-bottom:10px;}
+  .addrow input[type=text]{
+    flex:1;min-width:0;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;background:#fff;
+  }
+  .addrow input[type=text]:focus{outline:2px solid var(--q2);outline-offset:0;border-color:var(--q2);}
+  .tray{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;min-height:46px;scrollbar-width:thin;}
+  .tray.empty,.zone .list.empty{align-items:center;}
+  .emptyhint{font-size:12.5px;color:var(--faint);font-style:italic;padding:8px 4px;}
+
+  /* ---------- main split ---------- */
+  /* projects bar (horizontal, leftmost = highest priority) */
+  .projbar{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);box-shadow:var(--shadow);padding:9px 12px;margin-bottom:16px;}
+  .projbar > .label{flex:none;}
+  .projhint{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--faint);white-space:nowrap;}
+  .chips{display:flex;align-items:center;gap:8px;flex:1;min-width:0;overflow-x:auto;padding:3px;scrollbar-width:thin;}
+  .chip{flex:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hair-strong);background:#fff;border-radius:99px;padding:5px 10px;font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;cursor:pointer;}
+  .chip.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .chip .nm{max-width:160px;overflow:hidden;text-overflow:ellipsis;}
+  .chip .crank{font-family:var(--mono);font-size:10px;color:var(--faint);}
+  .chip .cdot{width:9px;height:9px;border-radius:3px;flex:none;}
+  .chip .ccount{font-family:var(--mono);font-size:10px;color:var(--faint);}
+  .chip.active .crank,.chip.active .ccount{color:rgba(255,255,255,.65);}
+  .chip .grip{color:var(--hair-strong);}
+  .chip.active .grip{color:rgba(255,255,255,.5);}
+  .chip .icbtn{width:20px;height:20px;}
+  .chip.active .icbtn{color:rgba(255,255,255,.7);}
+  .chip.active .icbtn:hover{background:rgba(255,255,255,.16);color:#fff;}
+  .addchip{font-family:var(--mono);font-size:15px;line-height:1;padding:5px 11px;color:var(--muted);}
+  .addchip:hover{border-color:var(--ink);color:var(--ink);}
+  .proj-tools{display:flex;gap:2px;}
+  .icbtn{appearance:none;border:none;background:transparent;cursor:pointer;color:var(--faint);font-size:13px;line-height:1;padding:3px;border-radius:5px;width:22px;height:22px;}
+  .icbtn:hover{background:#eef1f4;color:var(--ink);}
+
+  /* ---------- matrix ---------- */
+  .matrix{
+    display:grid;grid-template-columns:26px 1fr 1fr;grid-template-rows:24px 1fr 1fr;
+    gap:10px;min-height:60vh;
+  }
+  .axis{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;justify-content:center;}
+  .axis.corner{}
+  .axis.row{writing-mode:vertical-rl;transform:rotate(180deg);}
+  .zone{
+    background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:12px;display:flex;flex-direction:column;min-height:160px;
+    border-top:3px solid var(--zc);
+  }
+  .zone[data-q="q1"]{--zc:var(--q1);}
+  .zone[data-q="q2"]{--zc:var(--q2);}
+  .zone[data-q="q3"]{--zc:var(--q3);}
+  .zone[data-q="q4"]{--zc:var(--q4);}
+  .zone-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:10px;}
+  .zone-head .eb{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);}
+  .zone-head .verb{font-size:16px;font-weight:800;letter-spacing:-.01em;color:var(--zc);}
+  .zone .list{display:flex;flex-direction:column;gap:8px;flex:1;}
+
+  /* ---------- cards ---------- */
+  .card{
+    background:#fff;border:1px solid var(--hair-strong);border-radius:8px;padding:8px 9px;
+    display:flex;align-items:flex-start;gap:7px;position:relative;
+  }
+  .tray .card{min-width:200px;}
+  .grip{flex:none;align-self:stretch;display:flex;align-items:center;color:var(--hair-strong);cursor:grab;touch-action:none;padding:0 1px;}
+  .grip:hover{color:var(--muted);}
+  .grip svg{width:10px;height:16px;display:block;fill:currentColor;}
+  .card.dragging,.proj.dragging{opacity:.35;}
+  .card.dragging .grip,.proj.dragging .grip{cursor:grabbing;}
+  .card .chk{flex:none;width:18px;height:18px;margin-top:1px;border:1.5px solid var(--hair-strong);border-radius:5px;cursor:pointer;display:grid;place-items:center;background:#fff;}
+  .card .chk:hover{border-color:var(--ink);}
+  .card.done .chk{background:var(--ink);border-color:var(--ink);}
+  .card .chk svg{width:11px;height:11px;display:none;}
+  .card.done .chk svg{display:block;}
+  .card .body{flex:1;min-width:0;}
+  .card .title{font-size:13.5px;line-height:1.35;word-break:break-word;cursor:text;}
+  .card.done .title{text-decoration:line-through;color:var(--faint);}
+  .card .meta{display:flex;align-items:center;gap:6px;margin-top:6px;}
+  .card .psel{
+    -webkit-appearance:none;appearance:none;border:1px solid var(--hair);border-radius:99px;
+    font-family:var(--mono);font-size:10px;padding:2px 8px;background:#f7f8fa;color:var(--muted);cursor:pointer;max-width:130px;
+  }
+  .card .pdot{width:8px;height:8px;border-radius:2px;flex:none;}
+  .card .del{margin-left:auto;}
+  .card .titleinput{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--q2);border-radius:5px;padding:3px 5px;}
+
+  /* drop highlight */
+  .dropok{outline:2px dashed var(--zc,var(--q2));outline-offset:-4px;background:rgba(31,111,107,.04);}
+  .zone.dropok{background:color-mix(in srgb,var(--zc) 7%,#fff);}
+  .inbox.dropok{background:#f3f7f7;}
+
+  /* drag preview */
+  .drag-ghost{position:fixed;z-index:9999;pointer-events:none;box-shadow:0 10px 30px rgba(27,36,48,.25);transform:rotate(-1.5deg);opacity:.96;}
+
+  .help{margin-top:18px;font-size:12.5px;color:var(--muted);}
+  .help summary{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);cursor:pointer;}
+  .help p{margin:8px 0 0;max-width:70ch;}
+  .help b{color:var(--ink);}
+
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:10000;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+
+  .modal{position:fixed;inset:0;background:rgba(27,36,48,.45);display:flex;align-items:center;justify-content:center;z-index:10001;padding:18px;}
+  .modal[hidden]{display:none;}
+  .modal-card{background:#fff;border:1px solid var(--hair);border-radius:12px;box-shadow:0 20px 60px rgba(27,36,48,.35);width:min(440px,100%);padding:18px;}
+  .modal-title{font-weight:800;font-size:16px;margin-bottom:8px;}
+  .modal-body{font-size:13.5px;color:var(--muted);}
+  .modal-body input[type=text],.modal-body textarea{width:100%;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;margin-top:10px;color:var(--ink);}
+  .modal-body textarea{min-height:150px;font-family:var(--mono);font-size:12px;line-height:1.45;resize:vertical;}
+  .modal-body input[type=text]:focus,.modal-body textarea:focus{outline:2px solid var(--q2);outline-offset:0;border-color:var(--q2);}
+  .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
+
+  @media (max-width:860px){
+    .matrix{grid-template-columns:1fr;grid-template-rows:none;}
+    .axis{display:none;}
+    .zone{min-height:120px;}
+    .projhint{display:none;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <span class="eyebrow">Projects &middot; Tasks &middot; Triage</span>
+      <h1>Priority Desk</h1>
+    </div>
+    <div class="actions">
+      <div class="seg" id="doneSeg" title="Show or hide finished tasks">
+        <input type="radio" name="dn" id="dn-show" checked><label for="dn-show">Show done</label>
+        <input type="radio" name="dn" id="dn-hide"><label for="dn-hide">Hide done</label>
+      </div>
+      <button class="btn ghost" id="exportBtn"><span class="k">&darr;</span> Export</button>
+      <button class="btn ghost" id="importBtn"><span class="k">&uarr;</span> Import</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+    </div>
+  </header>
+
+  <section class="inbox" id="inbox" data-drop="inbox" data-axis="x">
+    <div class="inbox-head">
+      <span class="label">Inbox</span>
+      <span class="count" id="inboxCount">0</span>
+      <span class="emptyhint" style="margin-left:auto">Capture first, sort later &mdash; drag into the matrix when ready.</span>
+    </div>
+    <div class="addrow">
+      <input type="text" id="addInput" placeholder="Add anything on your mind&hellip;" autocomplete="off">
+      <button class="btn" id="addBtn">Add</button>
+    </div>
+    <div class="tray" id="inboxList"></div>
+  </section>
+
+  <section class="projbar">
+    <span class="label">Projects</span>
+    <div class="chips" id="projChips" data-drop="projects" data-axis="x">
+      <div class="chip allchip active" id="allChip">All</div>
+      <button class="chip addchip" id="addProjBtn" title="Add project">+</button>
+    </div>
+    <span class="projhint">left = top priority</span>
+  </section>
+
+  <main class="matrix" id="matrix">
+      <div class="axis corner"></div>
+      <div class="axis col">Urgent</div>
+      <div class="axis col">Not urgent</div>
+
+      <div class="axis row">Important</div>
+      <section class="zone" data-q="q1" data-drop="q1" data-axis="y">
+        <div class="zone-head"><div><div class="eb">Urgent &middot; Important</div><div class="verb">Do now</div></div><span class="count">0</span></div>
+        <div class="list"></div>
+      </section>
+      <section class="zone" data-q="q2" data-drop="q2" data-axis="y">
+        <div class="zone-head"><div><div class="eb">Important &middot; Not urgent</div><div class="verb">Schedule</div></div><span class="count">0</span></div>
+        <div class="list"></div>
+      </section>
+
+      <div class="axis row">Not important</div>
+      <section class="zone" data-q="q3" data-drop="q3" data-axis="y">
+        <div class="zone-head"><div><div class="eb">Urgent &middot; Not important</div><div class="verb">Delegate</div></div><span class="count">0</span></div>
+        <div class="list"></div>
+      </section>
+      <section class="zone" data-q="q4" data-drop="q4" data-axis="y">
+        <div class="zone-head"><div><div class="eb">Not urgent &middot; Not important</div><div class="verb">Drop</div></div><span class="count">0</span></div>
+        <div class="list"></div>
+      </section>
+    </main>
+
+  <details class="help">
+    <summary>How it works</summary>
+    <p>Drop thoughts into the <b>Inbox</b> as they arrive. When you have a moment, drag each one into a matrix quadrant and pick its project. Tap a task's title to rename it, the box to mark it done.</p>
+    <p>Tap a <b>project</b> chip to filter the matrix to just that project; tap it again, or <b>All</b>, to see everything. Drag the chips left and right to set priority — leftmost ranks highest, and in the all-projects view each quadrant is ordered by that ranking.</p>
+    <p><b>Export</b> writes your whole desk to JSON; <b>Import</b> loads one back, for moving between devices. Everything auto-saves in this browser as you go.</p>
+  </details>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-actions" id="modalActions"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var QUADS = ["q1","q2","q3","q4"];
+  var PROJ_COLORS = ["#2D6BA6","#C7452F","#1F8A5B","#B5852A","#7A5BA6","#0E7C86","#C25E8B","#586573","#3F7D4E","#9A4B6B"];
+  var STORE_KEY = "priority-desk-v1";
+
+  // ---------- state ----------
+  var state = { version:1, projects:[], tasks:[] };
+  var ui = { view:"all", hideDone:false };
+  var hasStorage = true;
+
+  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+  function orderBetween(a,b){
+    if(a==null && b==null) return 0;
+    if(a==null) return b-1;
+    if(b==null) return a+1;
+    return (a+b)/2;
+  }
+
+  function load(){
+    try{
+      var raw = localStorage.getItem(STORE_KEY);
+      if(raw){
+        var d = JSON.parse(raw);
+        if(d && d.data){ state = normalize(d.data); ui = Object.assign(ui, d.ui||{}); }
+        else { state = normalize(d); }
+      }
+    }catch(e){ hasStorage = false; }
+  }
+  function save(){
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify({data:state, ui:ui})); }
+    catch(e){ hasStorage = false; }
+  }
+  function normalize(d){
+    d = d || {};
+    var projects = Array.isArray(d.projects)? d.projects : [];
+    var tasks = Array.isArray(d.tasks)? d.tasks : [];
+    projects = projects.map(function(p,i){
+      return { id:p.id||uid(), name:String(p.name||"Untitled"), color:p.color||PROJ_COLORS[i%PROJ_COLORS.length], order: typeof p.order==="number"? p.order : i };
+    });
+    tasks = tasks.map(function(t,i){
+      var q = QUADS.indexOf(t.quadrant)>=0 ? t.quadrant : null;
+      var pid = t.projectId && projects.some(function(p){return p.id===t.projectId;}) ? t.projectId : null;
+      return { id:t.id||uid(), title:String(t.title||""), projectId:pid, quadrant:q, done:!!t.done, order: typeof t.order==="number"? t.order : i, createdAt: t.createdAt||Date.now() };
+    });
+    return { version:1, projects:projects, tasks:tasks };
+  }
+
+  // ---------- helpers ----------
+  function projectById(id){ for(var i=0;i<state.projects.length;i++){ if(state.projects[i].id===id) return state.projects[i]; } return null; }
+  function projOrder(id){ var p=projectById(id); return p? p.order : Infinity; } // no-project sinks to bottom
+  function sortedProjects(){ return state.projects.slice().sort(function(a,b){return a.order-b.order;}); }
+
+  function visibleTasks(){
+    return state.tasks.filter(function(t){
+      if(ui.hideDone && t.done) return false;
+      if(ui.view!=="all" && t.projectId!==ui.view) return false;
+      return true;
+    });
+  }
+  // tasks for a quadrant (null = inbox), already filtered + sorted
+  function tasksFor(quad){
+    var arr = visibleTasks().filter(function(t){ return t.quadrant===quad; });
+    if(ui.view==="all" && quad!==null){
+      arr.sort(function(a,b){
+        var d = projOrder(a.projectId)-projOrder(b.projectId);
+        return d!==0? d : a.order-b.order;
+      });
+    } else {
+      arr.sort(function(a,b){ return a.order-b.order; });
+    }
+    return arr;
+  }
+
+  // ---------- rendering ----------
+  var matrix = document.getElementById("matrix");
+  var inboxList = document.getElementById("inboxList");
+  var projChipsEl = document.getElementById("projChips");
+
+  function checkSVG(){ return '<svg viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5l2.5 2.5 4.5-5.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'; }
+  function gripSVG(){ return '<svg viewBox="0 0 6 16"><circle cx="1.5" cy="3" r="1"/><circle cx="4.5" cy="3" r="1"/><circle cx="1.5" cy="8" r="1"/><circle cx="4.5" cy="8" r="1"/><circle cx="1.5" cy="13" r="1"/><circle cx="4.5" cy="13" r="1"/></svg>'; }
+  function pencilSVG(){ return '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>'; }
+
+  function buildCard(t){
+    var card = document.createElement("div");
+    card.className = "card" + (t.done?" done":"");
+    card.dataset.id = t.id;
+
+    var grip = document.createElement("div"); grip.className="grip"; grip.title="Drag to move"; grip.innerHTML=gripSVG();
+    card.appendChild(grip);
+
+    var chk = document.createElement("div");
+    chk.className = "chk"; chk.setAttribute("role","checkbox"); chk.setAttribute("aria-checked", t.done?"true":"false");
+    chk.innerHTML = checkSVG();
+    chk.dataset.act = "toggle";
+    card.appendChild(chk);
+
+    var body = document.createElement("div"); body.className="body";
+    var title = document.createElement("div"); title.className="title"; title.textContent = t.title || "Untitled"; title.dataset.act="edit";
+    body.appendChild(title);
+
+    var meta = document.createElement("div"); meta.className="meta";
+    var dot = document.createElement("span"); dot.className="pdot";
+    var p = projectById(t.projectId);
+    dot.style.background = p? p.color : "transparent";
+    dot.style.border = p? "none" : "1px dashed var(--hair-strong)";
+    meta.appendChild(dot);
+
+    var sel = document.createElement("select"); sel.className="psel"; sel.dataset.act="project";
+    var optNone = document.createElement("option"); optNone.value=""; optNone.textContent="No project"; sel.appendChild(optNone);
+    sortedProjects().forEach(function(pr){
+      var o=document.createElement("option"); o.value=pr.id; o.textContent=pr.name; if(pr.id===t.projectId)o.selected=true; sel.appendChild(o);
+    });
+    meta.appendChild(sel);
+
+    var del = document.createElement("button"); del.className="icbtn del"; del.dataset.act="delete"; del.title="Delete task"; del.innerHTML="&times;";
+    meta.appendChild(del);
+
+    body.appendChild(meta);
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderTasks(){
+    // inbox
+    var inboxTasks = tasksFor(null);
+    inboxList.innerHTML="";
+    if(inboxTasks.length===0){
+      var h=document.createElement("div"); h.className="emptyhint"; h.textContent="Nothing waiting. Add something above."; inboxList.appendChild(h);
+      inboxList.classList.add("empty");
+    } else { inboxList.classList.remove("empty"); inboxTasks.forEach(function(t){ inboxList.appendChild(buildCard(t)); }); }
+    document.getElementById("inboxCount").textContent = inboxTasks.length;
+
+    // quadrants
+    QUADS.forEach(function(q){
+      var zone = matrix.querySelector('.zone[data-q="'+q+'"]');
+      var list = zone.querySelector(".list");
+      var items = tasksFor(q);
+      list.innerHTML="";
+      if(items.length===0){
+        var hint=document.createElement("div"); hint.className="emptyhint";
+        hint.textContent = q==="q4" ? "Empty here is a good sign." : "Drop tasks here.";
+        list.appendChild(hint); list.classList.add("empty");
+      } else { list.classList.remove("empty"); items.forEach(function(t){ list.appendChild(buildCard(t)); }); }
+      zone.querySelector(".count").textContent = items.length;
+    });
+  }
+
+  function renderProjects(){
+    var addBtn=document.getElementById("addProjBtn");
+    var allChip=document.getElementById("allChip");
+    Array.prototype.slice.call(projChipsEl.querySelectorAll(".proj")).forEach(function(n){ n.remove(); });
+    sortedProjects().forEach(function(p,idx){
+      var taskN = state.tasks.filter(function(t){return t.projectId===p.id && !t.done;}).length;
+      var chip=document.createElement("div");
+      chip.className="proj chip"+(ui.view===p.id?" active":"");
+      chip.dataset.id=p.id;
+      chip.innerHTML =
+        '<span class="grip" title="Drag to set priority">'+gripSVG()+'</span>'+
+        '<span class="crank">'+(idx+1)+'</span>'+
+        '<span class="cdot" style="background:'+p.color+'"></span>'+
+        '<span class="nm"></span>'+
+        '<span class="ccount">'+taskN+'</span>'+
+        '<button class="icbtn" data-act="rename" title="Rename project">'+pencilSVG()+'</button>'+
+        '<button class="icbtn" data-act="delproj" title="Delete project">&times;</button>';
+      chip.querySelector(".nm").textContent = p.name;
+      projChipsEl.insertBefore(chip, addBtn);
+    });
+    allChip.classList.toggle("active", ui.view==="all");
+  }
+
+  function render(){
+    if(ui.view!=="all" && !projectById(ui.view)) ui.view="all";
+    renderProjects();
+    renderTasks();
+  }
+
+  // ---------- mutations ----------
+  function addTask(title){
+    title=(title||"").trim(); if(!title) return;
+    var pid = ui.view!=="all" ? ui.view : null;
+    state.tasks.push({ id:uid(), title:title, projectId:pid, quadrant:null, done:false, order:Date.now(), createdAt:Date.now() });
+    save(); renderTasks(); renderProjects();
+  }
+  function addProject(){
+    var inp=document.createElement("input"); inp.type="text"; inp.placeholder="Project name";
+    var commit=function(){
+      var name=inp.value.trim(); if(!name){ closeModal(); return; }
+      var maxO = state.projects.reduce(function(m,p){return Math.max(m,p.order);}, -1);
+      var color = PROJ_COLORS[state.projects.length % PROJ_COLORS.length];
+      state.projects.push({ id:uid(), name:name, color:color, order:maxO+1 });
+      save(); render(); closeModal();
+    };
+    inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); commit(); } });
+    openModal("New project", inp, [
+      {label:"Cancel", onClick:closeModal},
+      {label:"Add project", primary:true, onClick:commit}
+    ]);
+  }
+  function moveProject(id,dir){
+    var ps=sortedProjects(); var i=ps.findIndex(function(p){return p.id===id;});
+    var j=i+dir; if(j<0||j>=ps.length) return;
+    var a=ps[i], b=ps[j]; var tmp=a.order; a.order=b.order; b.order=tmp;
+    save(); render();
+  }
+  function deleteProject(id){
+    var p=projectById(id); if(!p) return;
+    var n=state.tasks.filter(function(t){return t.projectId===id;}).length;
+    var doDelete=function(){
+      state.projects = state.projects.filter(function(x){return x.id!==id;});
+      state.tasks.forEach(function(t){ if(t.projectId===id) t.projectId=null; });
+      if(ui.view===id) ui.view="all";
+      save(); render(); closeModal();
+    };
+    if(n>0){
+      var body=document.createElement("div");
+      body.textContent='Delete "'+p.name+'"? Its '+n+' task'+(n>1?'s':'')+' will stay but lose this project tag.';
+      openModal("Delete project", body, [
+        {label:"Cancel", onClick:closeModal},
+        {label:"Delete", primary:true, onClick:doDelete}
+      ]);
+    } else { doDelete(); }
+  }
+
+  // ---------- event delegation (clicks) ----------
+  document.body.addEventListener("click", function(e){
+    if(Date.now()<suppressClickUntil) return;
+    var act = e.target.closest("[data-act]");
+    if(!act) return;
+    var a = act.dataset.act;
+
+    if(a==="toggle"){ var c=act.closest(".card"); var t=findTask(c.dataset.id); if(t){ t.done=!t.done; save(); render(); } return; }
+    if(a==="delete"){ var c2=act.closest(".card"); state.tasks=state.tasks.filter(function(x){return x.id!==c2.dataset.id;}); save(); renderTasks(); renderProjects(); return; }
+    if(a==="edit"){ startEdit(act); return; }
+
+    if(a==="rename"){ startRenameProject(act); return; }
+    if(a==="delproj"){ deleteProject(act.closest(".proj").dataset.id); return; }
+  });
+
+  // select change (project assignment)
+  document.body.addEventListener("change", function(e){
+    var sel=e.target.closest(".psel"); if(!sel) return;
+    var t=findTask(sel.closest(".card").dataset.id); if(!t) return;
+    t.projectId = sel.value || null;
+    if(ui.view!=="all" && t.projectId!==ui.view){ save(); render(); }
+    else { save(); renderTasks(); renderProjects(); }
+  });
+
+  // project chips: click a chip to filter the matrix to that project; All clears it
+  projChipsEl.addEventListener("click", function(e){
+    if(Date.now()<suppressClickUntil) return;
+    if(e.target.closest("[data-act],.grip,input,textarea,.titleinput")) return;
+    if(e.target.closest("#allChip")){ if(ui.view!=="all"){ ui.view="all"; save(); render(); } return; }
+    var chip=e.target.closest(".proj"); if(!chip) return;
+    ui.view = (ui.view===chip.dataset.id) ? "all" : chip.dataset.id;
+    save(); render();
+  });
+
+  function startRenameProject(el){
+    var row=el.closest(".proj"); if(!row) return;
+    var p=projectById(row.dataset.id); if(!p) return;
+    var span=row.querySelector(".nm"); if(!span) return;
+    var input=document.createElement("input"); input.type="text"; input.className="titleinput"; input.value=p.name; input.style.maxWidth="150px";
+    span.replaceWith(input); input.focus(); input.select();
+    var done=function(commit){ if(commit){ var v=input.value.trim(); if(v) p.name=v; } save(); render(); };
+    input.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ev.preventDefault();done(true);} else if(ev.key==="Escape"){done(false);} });
+    input.addEventListener("blur",function(){ done(true); });
+  }
+
+  function findTask(id){ for(var i=0;i<state.tasks.length;i++){ if(state.tasks[i].id===id) return state.tasks[i]; } return null; }
+
+  function startEdit(titleEl){
+    var card=titleEl.closest(".card"); var t=findTask(card.dataset.id); if(!t) return;
+    var input=document.createElement("input"); input.type="text"; input.className="titleinput"; input.value=t.title;
+    titleEl.replaceWith(input); input.focus(); input.select();
+    var done=function(commit){
+      if(commit){ var v=input.value.trim(); if(v) t.title=v; }
+      save(); render();
+    };
+    input.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ev.preventDefault();done(true);} else if(ev.key==="Escape"){done(false);} });
+    input.addEventListener("blur",function(){ done(true); });
+  }
+
+  // ---------- add handlers ----------
+  document.getElementById("addBtn").addEventListener("click", function(){ var i=document.getElementById("addInput"); addTask(i.value); i.value=""; i.focus(); });
+  document.getElementById("addInput").addEventListener("keydown", function(e){ if(e.key==="Enter"){ addTask(this.value); this.value=""; } });
+  document.getElementById("addProjBtn").addEventListener("click", addProject);
+  document.getElementById("dn-show").addEventListener("change", function(){ ui.hideDone=false; save(); render(); });
+  document.getElementById("dn-hide").addEventListener("change", function(){ ui.hideDone=true; save(); render(); });
+
+  // ---------- modal core ----------
+  var modalEl=document.getElementById("modal"),
+      modalTitleEl=document.getElementById("modalTitle"),
+      modalBodyEl=document.getElementById("modalBody"),
+      modalActionsEl=document.getElementById("modalActions");
+  function closeModal(){ modalEl.hidden=true; modalBodyEl.innerHTML=""; modalActionsEl.innerHTML=""; }
+  function openModal(title, bodyNode, buttons){
+    modalTitleEl.textContent=title;
+    modalBodyEl.innerHTML=""; if(bodyNode) modalBodyEl.appendChild(bodyNode);
+    modalActionsEl.innerHTML="";
+    (buttons||[]).forEach(function(b){
+      var btn=document.createElement("button");
+      btn.className="btn"+(b.primary?" primary":" ghost");
+      btn.textContent=b.label;
+      btn.addEventListener("click", b.onClick||closeModal);
+      modalActionsEl.appendChild(btn);
+    });
+    modalEl.hidden=false;
+    var first=modalBodyEl.querySelector("input,textarea"); if(first) first.focus();
+  }
+  modalEl.addEventListener("click", function(e){ if(e.target===modalEl) closeModal(); });
+  document.addEventListener("keydown", function(e){ if(e.key==="Escape" && !modalEl.hidden) closeModal(); });
+
+  function copyFrom(ta){
+    ta.focus(); ta.select();
+    function fallback(){ var ok=false; try{ ok=document.execCommand("copy"); }catch(e){} toast(ok?"Copied to clipboard":"Select all, then press Ctrl/Cmd+C"); }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(ta.value).then(function(){ toast("Copied to clipboard"); }, fallback);
+    } else { fallback(); }
+  }
+  function downloadJSON(json){
+    try{
+      var blob=new Blob([json],{type:"application/json"});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement("a"); a.href=url; a.download="priority-desk-"+new Date().toISOString().slice(0,10)+".json";
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      toast("Downloaded JSON");
+    }catch(e){ toast("Download blocked here \u2014 use Copy instead."); }
+  }
+
+  // ---------- import / export ----------
+  function openExport(){
+    var json=JSON.stringify({version:1,exportedAt:new Date().toISOString(),projects:state.projects,tasks:state.tasks},null,2);
+    var body=document.createElement("div");
+    var p=document.createElement("div"); p.textContent="Copy this text, or download it as a file. Either one can be imported on another device.";
+    var ta=document.createElement("textarea"); ta.readOnly=true; ta.value=json;
+    body.appendChild(p); body.appendChild(ta);
+    openModal("Export desk", body, [
+      {label:"Close", onClick:closeModal},
+      {label:"Download .json", onClick:function(){ downloadJSON(json); }},
+      {label:"Copy", primary:true, onClick:function(){ copyFrom(ta); }}
+    ]);
+    setTimeout(function(){ ta.focus(); ta.select(); },0);
+  }
+  function openImport(){
+    var body=document.createElement("div");
+    var p=document.createElement("div"); p.textContent="Paste exported JSON below, or choose a file. This replaces your current desk.";
+    var ta=document.createElement("textarea"); ta.placeholder="Paste JSON here\u2026";
+    body.appendChild(p); body.appendChild(ta);
+    openModal("Import desk", body, [
+      {label:"Cancel", onClick:closeModal},
+      {label:"Choose file\u2026", onClick:function(){ document.getElementById("importFile").click(); }},
+      {label:"Load", primary:true, onClick:function(){ doImport(ta.value); }}
+    ]);
+  }
+  function doImport(text){
+    try{
+      var d=JSON.parse(text);
+      if(!d || (!Array.isArray(d.tasks) && !Array.isArray(d.projects))) throw new Error("shape");
+      state = normalize(d); ui.view="all"; save(); render(); closeModal();
+      toast("Imported "+state.tasks.length+" task"+(state.tasks.length!==1?"s":""));
+    }catch(err){ toast("That isn't valid Priority Desk JSON."); }
+  }
+  document.getElementById("exportBtn").addEventListener("click", openExport);
+  document.getElementById("importBtn").addEventListener("click", openImport);
+  document.getElementById("importFile").addEventListener("change", function(e){
+    var f=e.target.files[0]; if(!f){ return; }
+    var r=new FileReader();
+    r.onload=function(){ doImport(r.result); };
+    r.readAsText(f);
+    e.target.value="";
+  });
+
+  var toastEl=document.getElementById("toast"); var toastTimer;
+  function toast(msg){ toastEl.textContent=msg; toastEl.classList.add("show"); clearTimeout(toastTimer); toastTimer=setTimeout(function(){toastEl.classList.remove("show");},2200); }
+
+  // ---------- drag & drop (pointer-based, touch + mouse) ----------
+  var drag=null;
+  var suppressClickUntil=0;
+  document.body.addEventListener("pointerdown", function(e){
+    if(e.button && e.button!==0) return;
+    if(e.target.closest(".chk,.psel,.del,.icbtn,select,input,button,.titleinput")) return;
+    var card=e.target.closest(".card");
+    var proj=e.target.closest(".proj");
+    var handle=card||proj; if(!handle) return;
+    var isMouse = e.pointerType==="mouse";
+    var onGrip = !!e.target.closest(".grip");
+    if(!isMouse && !onGrip) return; // touch/pen: only the grip starts a drag, so taps and scrolling still work
+    drag={
+      type: card?"task":"project",
+      id: handle.dataset.id,
+      el: handle,
+      startX:e.clientX, startY:e.clientY,
+      active:false, ghost:null, lastZone:null, pointerId:e.pointerId
+    };
+  });
+  document.body.addEventListener("pointermove", function(e){
+    if(!drag) return;
+    if(!drag.active){
+      if(Math.abs(e.clientX-drag.startX)<6 && Math.abs(e.clientY-drag.startY)<6) return;
+      beginDrag(e);
+    }
+    moveDrag(e);
+  });
+  document.body.addEventListener("pointerup", endDrag);
+  document.body.addEventListener("pointercancel", endDrag);
+
+  function beginDrag(e){
+    drag.active=true;
+    var rect=drag.el.getBoundingClientRect();
+    var g=drag.el.cloneNode(true);
+    g.classList.add("drag-ghost"); g.classList.remove("dragging");
+    g.style.width=rect.width+"px"; g.style.left=rect.left+"px"; g.style.top=rect.top+"px";
+    drag.offX=e.clientX-rect.left; drag.offY=e.clientY-rect.top;
+    document.body.appendChild(g); drag.ghost=g;
+    drag.el.classList.add("dragging");
+    document.body.style.userSelect="none";
+  }
+  function moveDrag(e){
+    if(!drag.active) return;
+    if(e.cancelable) e.preventDefault();
+    drag.ghost.style.left=(e.clientX-drag.offX)+"px";
+    drag.ghost.style.top=(e.clientY-drag.offY)+"px";
+    drag.ghost.style.display="none";
+    var under=document.elementFromPoint(e.clientX,e.clientY);
+    drag.ghost.style.display="";
+    var sel = drag.type==="task" ? "[data-drop]" : '[data-drop="projects"]';
+    var zone = under? under.closest(sel) : null;
+    if(zone && drag.type==="task" && zone.dataset.drop==="projects") zone=null;
+    if(drag.lastZone && drag.lastZone!==zone) drag.lastZone.classList.remove("dropok");
+    if(zone){ zone.classList.add("dropok"); drag.lastZone=zone; }
+  }
+  function listContainerFor(zone){
+    if(zone.classList.contains("zone")) return zone.querySelector(".list");
+    return zone; // inbox tray or proj list
+  }
+  function endDrag(e){
+    if(!drag){ return; }
+    var d=drag; drag=null;
+    if(!d.active){ return; }
+    suppressClickUntil=Date.now()+350;
+    document.body.style.userSelect="";
+    if(d.ghost) d.ghost.remove();
+    d.el.classList.remove("dragging");
+    if(d.lastZone) d.lastZone.classList.remove("dropok");
+    var zone=d.lastZone; if(!zone) { render(); return; }
+
+    var container=listContainerFor(zone);
+    var axis=zone.dataset.axis||"y";
+    var idx=insertionIndex(container, e.clientX, e.clientY, axis, d.id);
+
+    if(d.type==="task"){
+      var t=findTask(d.id); if(!t){ render(); return; }
+      var newQuad = zone.dataset.drop==="inbox" ? null : zone.dataset.drop;
+      t.quadrant = newQuad;
+      // reorder among siblings currently shown in this container
+      var sibs = siblingIds(container, d.id);
+      assignOrder(t, sibs, idx, "order");
+      save(); render();
+    } else {
+      // project reorder
+      var sibsP = siblingIds(container, d.id);
+      var p=projectById(d.id);
+      assignOrder(p, sibsP.map(function(id){return id;}), idx, "order");
+      save(); render();
+    }
+  }
+
+  function siblingIds(container, draggingId){
+    return Array.prototype.slice.call(container.children)
+      .filter(function(c){ return c.dataset && c.dataset.id && c.dataset.id!==draggingId; })
+      .map(function(c){ return c.dataset.id; });
+  }
+  function insertionIndex(container, x, y, axis, draggingId){
+    var kids=Array.prototype.slice.call(container.children).filter(function(c){return c.dataset && c.dataset.id && c.dataset.id!==draggingId;});
+    for(var i=0;i<kids.length;i++){
+      var r=kids[i].getBoundingClientRect();
+      var mid = axis==="x" ? r.left+r.width/2 : r.top+r.height/2;
+      var pos = axis==="x" ? x : y;
+      if(pos<mid) return i;
+    }
+    return kids.length;
+  }
+  function objOrder(type,id){
+    if(type==="proj") return (projectById(id)||{}).order;
+    return (findTask(id)||{}).order;
+  }
+  // assign 'item.order' so it lands at position idx within the ordered sibling id list
+  function assignOrder(item, siblingIds, idx, key){
+    var orders = siblingIds.map(function(id){ var o=findTask(id); if(o) return o.order; var p=projectById(id); return p?p.order:0; });
+    var before = idx>0 ? orders[idx-1] : null;
+    var after = idx<orders.length ? orders[idx] : null;
+    item[key] = orderBetween(before, after);
+  }
+
+  // ---------- boot ----------
+  load();
+  if(state.projects.length===0 && state.tasks.length===0){
+    // friendly first-run seed
+    var pA=uid(), pB=uid();
+    state.projects=[
+      {id:pA,name:"Getting started",color:PROJ_COLORS[0],order:0},
+      {id:pB,name:"Someday",color:PROJ_COLORS[4],order:1}
+    ];
+    state.tasks=[
+      {id:uid(),title:"Drag me into a quadrant \u2192",projectId:pA,quadrant:null,done:false,order:1,createdAt:Date.now()},
+      {id:uid(),title:"Reply to the urgent email",projectId:pA,quadrant:"q1",done:false,order:2,createdAt:Date.now()},
+      {id:uid(),title:"Plan next quarter",projectId:pA,quadrant:"q2",done:false,order:3,createdAt:Date.now()},
+      {id:uid(),title:"Tap my title to rename me",projectId:pB,quadrant:"q2",done:false,order:4,createdAt:Date.now()}
+    ];
+    save();
+  }
+  document.getElementById("dn-hide").checked = ui.hideDone;
+  document.getElementById("dn-show").checked = !ui.hideDone;
+  render();
+  if(!hasStorage){ toast("Heads up: this browser blocked auto-save. Use Export to keep your data."); }
+  else if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(function(){}); }
+
+  // Offline support when served over http(s); opened from file:// it simply runs without.
+  if("serviceWorker" in navigator && location.protocol.indexOf("http")===0){
+    navigator.serviceWorker.register("sw.js").catch(function(e){ console.warn("Service worker not registered", e); });
+  }
+})();
+</script>
+</body>
+</html>

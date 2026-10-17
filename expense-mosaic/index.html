@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Expense Mosaic</title>
+<meta name="description" content="Collect receipts into a mosaic you can annotate, total and print." />
+<meta name="theme-color" content="#ECEFF3" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Expenses" />
+<style>
+  :root{
+    --paper:#ECEFF3;
+    --panel:#FFFFFF;
+    --ink:#1B2430;
+    --muted:#5B6675;
+    --faint:#8A93A0;
+    --hair:#D5DBE2;
+    --hair-strong:#C3CAD3;
+    --grid:rgba(27,36,48,0.045);
+    --accent:#1F6F6B;
+    --danger:#C7452F;
+    --radius:10px;
+    --shadow:0 1px 2px rgba(27,36,48,.06), 0 6px 18px rgba(27,36,48,.06);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --tile:220px;
+    --pcols:3;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;min-height:100%;}
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    background-color:var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px;
+    -webkit-font-smoothing:antialiased;
+    line-height:1.4;
+  }
+  .wrap{max-width:1400px;margin:0 auto;padding:18px clamp(12px,3vw,28px) 60px;}
+  [hidden]{display:none !important;}
+
+  /* ---------- top bar ---------- */
+  .topbar{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:14px;}
+  .brand{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .brand .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);}
+  .brand h1{margin:0;font-size:clamp(22px,3.4vw,30px);font-weight:800;letter-spacing:-.02em;overflow-wrap:anywhere;}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+
+  button,select,input,textarea{font-family:inherit;color:var(--ink);}
+  .btn{
+    appearance:none;border:1px solid var(--hair-strong);background:var(--panel);
+    padding:8px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;line-height:1;transition:border-color .15s,background .15s,transform .05s;
+    text-decoration:none;
+  }
+  .btn:hover{border-color:var(--ink);}
+  .btn:active{transform:translateY(1px);}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .btn.danger{color:var(--danger);}
+  .btn.danger:hover{border-color:var(--danger);}
+  .btn .k{font-family:var(--mono);font-size:14px;}
+  .btn:disabled{opacity:.45;cursor:default;}
+
+  select.pick{
+    border:1px solid var(--hair-strong);background:var(--panel);border-radius:8px;
+    padding:7px 28px 7px 10px;font-size:13px;font-weight:600;cursor:pointer;max-width:240px;
+    -webkit-appearance:none;appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%235B6675'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;
+  }
+
+  /* ---------- toolbar ---------- */
+  .toolbar{
+    display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;
+    background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:10px 14px;margin-bottom:16px;
+  }
+  .stats{display:flex;gap:6px 18px;flex-wrap:wrap;align-items:baseline;}
+  .stat{display:flex;flex-direction:column;}
+  .label{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);}
+  .stat b{font-size:16px;font-variant-numeric:tabular-nums;}
+  .stat.warn b{color:var(--danger);}
+  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
+  .ctl{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+  .ctl input[type=range]{width:110px;accent-color:var(--ink);}
+  .ctl input[type=checkbox]{accent-color:var(--ink);}
+
+  /* ---------- mosaic ---------- */
+  .mosaic{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(min(var(--tile),calc(50% - 7px)),1fr));
+    grid-auto-rows:4px;column-gap:14px;row-gap:0;align-items:start;
+  }
+  .tile{position:relative;margin:0;user-select:none;-webkit-user-select:none;}
+  .tile .inner{
+    margin-bottom:14px;background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);
+    box-shadow:var(--shadow);overflow:hidden;cursor:zoom-in;transition:border-color .15s,box-shadow .15s;
+  }
+  .tile:hover .inner{border-color:var(--hair-strong);box-shadow:0 1px 2px rgba(27,36,48,.08),0 10px 24px rgba(27,36,48,.10);}
+  .tile .ph{background:#F5F6F8;display:block;width:100%;}
+  .tile .ph img{display:block;width:100%;height:100%;object-fit:contain;-webkit-user-drag:none;}
+  .tile .num{
+    position:absolute;top:8px;left:8px;font-family:var(--mono);font-size:11px;font-weight:700;
+    background:var(--ink);color:#fff;border-radius:99px;padding:2px 7px;pointer-events:none;
+  }
+  .tile .tools{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s;}
+  .tile:hover .tools,.tile:focus-within .tools{opacity:1;}
+  .tile .tools button,.tile .grip{
+    appearance:none;border:1px solid var(--hair-strong);background:rgba(255,255,255,.94);border-radius:7px;
+    width:28px;height:28px;display:grid;place-items:center;font-size:13px;cursor:pointer;padding:0;
+  }
+  .tile .tools button:hover{border-color:var(--ink);}
+  .tile .tools button.del:hover{border-color:var(--danger);color:var(--danger);}
+  .tile .grip{display:none;touch-action:none;cursor:grab;color:var(--muted);}
+  .cap{padding:8px 10px 9px;border-top:1px solid var(--hair);display:grid;grid-template-columns:1fr auto;gap:0 10px;align-items:baseline;}
+  .cap .who{font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cap .who.blank{color:var(--faint);font-weight:500;font-style:italic;}
+  .cap .amt{font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;}
+  .cap .amt.blank{color:var(--faint);font-weight:500;}
+  .cap .meta{grid-column:1 / -1;font-family:var(--mono);font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cap .note{grid-column:1 / -1;font-size:12px;color:var(--muted);margin-top:2px;}
+  body.nocap .cap{display:none;}
+  .tile.dragging{opacity:.3;}
+  .tile.drop-before .inner{box-shadow:-5px 0 0 -1px var(--accent);}
+  .tile.drop-after .inner{box-shadow:5px 0 0 -1px var(--accent);}
+  .ghost{position:fixed;z-index:60;pointer-events:none;opacity:.88;transform:rotate(1.5deg);}
+  .ghost .inner{box-shadow:0 18px 40px rgba(27,36,48,.25);}
+  @media (hover:none){
+    .tile .tools{opacity:1;}
+    .tile .grip{display:grid;}
+  }
+
+  /* ---------- empty / drop ---------- */
+  .empty{
+    border:2px dashed var(--hair-strong);border-radius:14px;background:rgba(255,255,255,.6);
+    padding:clamp(28px,7vw,64px) 20px;text-align:center;color:var(--muted);cursor:pointer;
+  }
+  .empty:hover{border-color:var(--ink);}
+  .empty h2{margin:0 0 6px;color:var(--ink);font-size:20px;}
+  .empty p{margin:4px 0;}
+  .kbd{font-family:var(--mono);font-size:12px;border:1px solid var(--hair-strong);border-bottom-width:2px;border-radius:5px;padding:1px 5px;background:var(--panel);}
+  .dropzone{
+    position:fixed;inset:10px;z-index:80;border:3px dashed var(--accent);border-radius:16px;
+    background:rgba(236,239,243,.88);display:grid;place-items:center;pointer-events:none;
+    font-size:22px;font-weight:800;color:var(--accent);
+  }
+  .hint{font-size:12px;color:var(--faint);margin-top:14px;}
+
+  /* ---------- modals ---------- */
+  .modal{position:fixed;inset:0;z-index:50;background:rgba(27,36,48,.55);display:flex;align-items:center;justify-content:center;padding:16px;}
+  .sheet{background:var(--panel);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:100%;max-width:440px;max-height:calc(100vh - 32px);overflow:auto;}
+  .sheet header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--hair);gap:10px;}
+  .sheet header h3{margin:0;font-size:16px;}
+  .sheet .body{padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
+  .sheet footer{display:flex;justify-content:space-between;gap:8px;padding:12px 16px;border-top:1px solid var(--hair);flex-wrap:wrap;}
+  .sheet footer .right{display:flex;gap:8px;margin-left:auto;}
+  .x{appearance:none;border:0;background:none;font-size:20px;line-height:1;cursor:pointer;color:var(--muted);padding:4px 6px;}
+  .field{display:flex;flex-direction:column;gap:4px;}
+  .field input,.field select,.field textarea{
+    border:1px solid var(--hair-strong);border-radius:8px;padding:8px 10px;font-size:14px;background:#fff;width:100%;
+  }
+  .field textarea{resize:vertical;min-height:64px;}
+  .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent);}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .check{display:flex;gap:8px;align-items:center;font-size:14px;}
+  .check input{accent-color:var(--ink);}
+  .small{font-size:12px;color:var(--muted);margin:0;}
+
+  /* viewer */
+  .sheet.viewer{max-width:1180px;height:calc(100vh - 32px);display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr;overflow:hidden;}
+  .viewer header{grid-column:1 / -1;}
+  .viewer .stage{background:#20262E;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;overflow:auto;}
+  .viewer .stage img{max-width:100%;max-height:100%;object-fit:contain;display:block;cursor:zoom-in;}
+  .viewer .stage.zoom{align-items:flex-start;justify-content:flex-start;}
+  .viewer .stage.zoom img{max-width:none;max-height:none;cursor:zoom-out;}
+  .viewer .side{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--hair);}
+  .viewer .side .body{overflow:auto;flex:1;}
+  .viewer .side footer{flex-direction:column;}
+  .viewer .side footer .line{display:flex;gap:8px;flex-wrap:wrap;}
+  .nav{display:flex;gap:6px;align-items:center;}
+  .nav .pos{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:56px;text-align:center;}
+  @media (max-width:780px){
+    .sheet.viewer{grid-template-columns:1fr;grid-template-rows:auto 45vh auto;height:auto;overflow:auto;}
+    .viewer .side{border-left:0;border-top:1px solid var(--hair);}
+  }
+
+  /* cropper */
+  .sheet.cropper{max-width:980px;}
+  .crop-stage{height:min(64vh,640px);display:flex;align-items:center;justify-content:center;background:#20262E;border-radius:8px;touch-action:none;}
+  .crop-stage canvas{display:block;cursor:crosshair;touch-action:none;}
+
+  /* toast */
+  .toast{
+    position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:90;
+    background:var(--ink);color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;
+    box-shadow:0 10px 30px rgba(0,0,0,.25);max-width:calc(100vw - 32px);
+  }
+  .toast.err{background:var(--danger);}
+
+  .foot{margin-top:28px;font-size:12px;color:var(--faint);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+
+  /* ---------- print ---------- */
+  .print-only{display:none;}
+  .phead h1{margin:0 0 2px;font-size:20pt;}
+  .phead .sub{font-size:10pt;color:#444;margin:0 0 8pt;}
+  .phead .notes{font-size:10pt;margin:0 0 8pt;white-space:pre-wrap;}
+  .ptable{width:100%;border-collapse:collapse;font-size:9.5pt;margin:6pt 0 0;}
+  .ptable th,.ptable td{border-bottom:1px solid #bbb;padding:3pt 5pt;text-align:left;vertical-align:top;}
+  .ptable th{font-family:var(--mono);font-size:8pt;text-transform:uppercase;letter-spacing:.08em;color:#555;}
+  .ptable .r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .ptable tfoot td{border-bottom:0;}
+  .ptable tfoot tr.total td{border-top:2px solid #333;font-weight:700;}
+  .ptable tfoot tr.cat td{color:#555;font-size:9pt;padding-top:1pt;padding-bottom:1pt;}
+  @media print{
+    @page{margin:12mm;}
+    body{background:#fff;}
+    .wrap{max-width:none;padding:0;}
+    .topbar,.toolbar,.foot,.tools,.grip,.modal,.toast,.dropzone,.empty{display:none !important;}
+    .print-only{display:block;}
+    .psummary{margin-bottom:8mm;}
+    body.p-break .psummary{break-after:page;}
+    body.p-nosum .ptable{display:none;}
+    .mosaic{display:block;column-count:var(--pcols);column-gap:5mm;}
+    .tile{break-inside:avoid;page-break-inside:avoid;margin-bottom:5mm;grid-row-end:auto !important;}
+    .tile .inner{margin:0;box-shadow:none;border:1px solid #bbb;border-radius:4px;}
+    .tile .ph{background:none;aspect-ratio:auto !important;}
+    .tile .ph img{height:auto;max-height:250mm;}
+    .tile .num{background:#fff;color:#000;border:1px solid #000;}
+    body.p-nocap .cap,.cap.nodetail{display:none !important;}
+    .cap .blank{visibility:hidden;}
+    body.nocap:not(.p-nocap) .cap{display:grid;}
+    .cap{border-top:1px solid #bbb;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="eyebrow">Expense Mosaic</span>
+      <h1 id="title">…</h1>
+    </div>
+    <div class="actions">
+      <select class="pick" id="batchSel" aria-label="Switch batch"></select>
+      <button class="btn" id="batchEditBtn" title="Rename, currency, notes, delete">Batch settings</button>
+      <button class="btn primary" id="addBtn"><span class="k">+</span> Add receipts</button>
+      <input type="file" id="fileIn" accept="image/*,application/pdf,.pdf" multiple hidden />
+    </div>
+  </header>
+
+  <section class="toolbar" id="toolbar">
+    <div class="stats" id="stats"></div>
+    <div class="controls">
+      <label class="ctl">Size <input type="range" id="sizeIn" min="120" max="420" step="10" /></label>
+      <label class="ctl"><input type="checkbox" id="capIn" /> Captions</label>
+      <button class="btn" id="sortBtn" title="Reorder receipts by date">Sort by date</button>
+      <button class="btn" id="printBtn">Print…</button>
+      <button class="btn" id="exportBtn" title="Download this batch, images included, as a .json backup">Export</button>
+      <button class="btn" id="importBtn" title="Import a batch from an Export file">Import</button>
+      <input type="file" id="importIn" accept=".json,application/json" hidden />
+    </div>
+  </section>
+
+  <section class="print-only psummary" id="psummary"></section>
+
+  <main>
+    <div class="mosaic" id="mosaic"></div>
+    <div class="empty" id="empty" hidden>
+      <h2>Drop receipts here</h2>
+      <p>Photos, scans, screenshots or PDFs. Click to browse, or paste a screenshot with <span class="kbd">Ctrl/⌘ V</span>.</p>
+      <p class="hint">PDF pages come in as images. Use ✂ on a tile to snip out just the receipt.</p>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span>Everything is stored in this browser only (IndexedDB). Use Export to back up or move a batch.</span>
+    <span id="usage"></span>
+  </footer>
+</div>
+
+<div class="dropzone" id="dropzone" hidden>Drop to add receipts</div>
+
+<!-- batch settings -->
+<div class="modal" id="batchDlg" hidden>
+  <form class="sheet" id="batchForm" autocomplete="off">
+    <header><h3 id="batchDlgTitle">Batch</h3><button type="button" class="x" data-close aria-label="Close">×</button></header>
+    <div class="body">
+      <label class="field"><span class="label">Name</span><input id="bName" required maxlength="120" placeholder="e.g. Berlin trip – Oct 2026" /></label>
+      <label class="field"><span class="label">Currency</span><select id="bCur"></select></label>
+      <label class="field"><span class="label">Notes (shown on the printout)</span><textarea id="bNotes" placeholder="Claim reference, cost centre, approver…"></textarea></label>
+    </div>
+    <footer>
+      <button type="button" class="btn danger" id="bDelete">Delete batch</button>
+      <div class="right"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+    </footer>
+  </form>
+</div>
+
+<!-- viewer / details -->
+<div class="modal" id="viewer" hidden>
+  <div class="sheet viewer">
+    <header>
+      <div class="nav">
+        <button class="btn" id="vPrev" title="Previous (←)">‹</button>
+        <span class="pos" id="vPos"></span>
+        <button class="btn" id="vNext" title="Next (→)">›</button>
+      </div>
+      <button type="button" class="x" data-close aria-label="Close">×</button>
+    </header>
+    <div class="stage" id="vStage"><img id="vImg" alt="" /></div>
+    <div class="side">
+      <div class="body">
+        <label class="field"><span class="label">Merchant / description</span><input id="fLabel" maxlength="160" placeholder="e.g. Hotel Adlon" /></label>
+        <div class="row2">
+          <label class="field"><span class="label">Date</span><input id="fDate" type="date" /></label>
+          <label class="field"><span class="label">Amount</span><input id="fAmount" inputmode="decimal" placeholder="0.00" /></label>
+        </div>
+        <label class="field"><span class="label">Category</span><input id="fCat" list="catList" maxlength="60" placeholder="Travel, Meals…" /></label>
+        <label class="field"><span class="label">Notes</span><textarea id="fNote" placeholder="Attendees, purpose, project code…"></textarea></label>
+        <p class="small" id="vSrc"></p>
+      </div>
+      <footer>
+        <div class="line">
+          <button class="btn" id="vCrop">✂ Crop &amp; rotate</button>
+          <a class="btn" id="vDownload" download>Download</a>
+        </div>
+        <div class="line"><button class="btn danger" id="vDelete">Delete receipt</button></div>
+      </footer>
+    </div>
+  </div>
+</div>
+<datalist id="catList"></datalist>
+
+<!-- cropper -->
+<div class="modal" id="cropper" hidden>
+  <div class="sheet cropper">
+    <header><h3>Crop &amp; rotate</h3><button type="button" class="x" data-close aria-label="Close">×</button></header>
+    <div class="body">
+      <div class="crop-stage" id="cropStage"><canvas id="cropCanvas"></canvas></div>
+      <p class="small">Drag to draw the area to keep. Drag inside it to move, drag a corner to resize.</p>
+    </div>
+    <footer>
+      <div class="line" style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="cRotL" title="Rotate left">⟲ Rotate</button>
+        <button class="btn" id="cRotR" title="Rotate right">⟳ Rotate</button>
+        <button class="btn" id="cReset">Reset</button>
+      </div>
+      <div class="right"><button class="btn" data-close>Cancel</button><button class="btn primary" id="cApply">Apply</button></div>
+    </footer>
+  </div>
+</div>
+
+<!-- print options -->
+<div class="modal" id="printDlg" hidden>
+  <form class="sheet" id="printForm">
+    <header><h3>Print</h3><button type="button" class="x" data-close aria-label="Close">×</button></header>
+    <div class="body">
+      <label class="field"><span class="label">Receipts per row</span>
+        <select id="pCols"><option value="1">1 – largest</option><option value="2">2</option><option value="3">3</option><option value="4">4 – most compact</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="pSummary" /> Summary table (dates, merchants, amounts, totals)</label>
+      <label class="check"><input type="checkbox" id="pBreak" /> Put the summary on its own page</label>
+      <label class="check"><input type="checkbox" id="pCaptions" /> Captions under each receipt</label>
+      <p class="small">To make a PDF, choose “Save as PDF” as the printer.</p>
+    </div>
+    <footer><div class="right"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Print</button></div></footer>
+  </form>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var DB_NAME = "expense-mosaic";
+  var UI_KEY = "expense-mosaic-ui-v1";
+  var EXPORT_FORMAT = "expense-mosaic";
+  var PDFJS_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
+  var MAX_EDGE = 2400;        // longest side kept for imported images
+  var PDF_EDGE = 2000;        // longest side when rasterising PDF pages
+  var PDF_MAX_PAGES = 40;
+  var ROW = 4, GAP = 14;      // must match .mosaic grid-auto-rows / column-gap
+  var DEFAULT_CATS = ["Travel","Transport","Lodging","Meals","Fuel","Parking","Supplies","Software","Phone","Other"];
+  var CURRENCIES = ["GBP","EUR","USD","AUD","CAD","NZD","CHF","SEK","NOK","DKK","PLN","JPY","INR","SGD","HKD","ZAR"];
+
+  // ---------- state ----------
+  var S = { batches:[], batch:null, items:[], urls:{} };
+  var ui = { batchId:null, tile:220, captions:true, print:{ cols:3, summary:true, pageBreak:false, captions:true } };
+  var viewIdx = -1;
+
+  function $(s, r){ return (r||document).querySelector(s); }
+  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
+  function orderBetween(a,b){
+    if(a==null && b==null) return 0;
+    if(a==null) return b-1;
+    if(b==null) return a+1;
+    return (a+b)/2;
+  }
+  function byOrder(a,b){ return a.order-b.order; }
+
+  function loadUi(){
+    try{
+      var d = JSON.parse(localStorage.getItem(UI_KEY)||"null");
+      if(d){ ui = Object.assign(ui, d); ui.print = Object.assign({ cols:3, summary:true, pageBreak:false, captions:true }, d.print||{}); }
+    }catch(e){}
+  }
+  function saveUi(){ try{ localStorage.setItem(UI_KEY, JSON.stringify(ui)); }catch(e){} }
+
+  var toastTimer = null;
+  function toast(msg, isErr, ms){
+    var t = $("#toast");
+    if(!t){ t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+    t.className = "toast" + (isErr? " err" : "");
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer);
+    if(ms !== 0) toastTimer = setTimeout(function(){ t.hidden = true; }, ms || (isErr? 6000 : 2600));
+  }
+
+  function guessCurrency(){
+    var l = (navigator.language||"").toLowerCase();
+    var map = { "en-gb":"GBP","en-us":"USD","en-au":"AUD","en-ca":"CAD","en-nz":"NZD","en-in":"INR","en-za":"ZAR","en-sg":"SGD","ja":"JPY","sv":"SEK","nb":"NOK","no":"NOK","da":"DKK","pl":"PLN","de-ch":"CHF" };
+    if(map[l]) return map[l];
+    if(map[l.split("-")[0]]) return map[l.split("-")[0]];
+    if(/^(de|fr|es|it|nl|pt|fi|el|ga|et|lv|lt|sk|sl|mt|hr)/.test(l) || l==="en-ie") return "EUR";
+    return "GBP";
+  }
+
+  // ---------- IndexedDB ----------
+  // stores: batches {id,...}, items {id,batchId,...meta}, blobs {id,orig,img}
+  var dbp = null;
+  function openDb(){
+    if(dbp) return dbp;
+    dbp = new Promise(function(res, rej){
+      if(!window.indexedDB){ rej(new Error("This browser has no IndexedDB")); return; }
+      var r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = function(){
+        var db = r.result;
+        db.createObjectStore("batches", { keyPath:"id" });
+        db.createObjectStore("items", { keyPath:"id" }).createIndex("batchId", "batchId");
+        db.createObjectStore("blobs", { keyPath:"id" });
+      };
+      r.onsuccess = function(){ res(r.result); };
+      r.onerror = function(){ rej(r.error); };
+    });
+    return dbp;
+  }
+  // Runs fn(tx, set) inside one transaction; resolves with whatever set() received once it commits.
+  function run(stores, mode, fn){
+    return openDb().then(function(db){
+      return new Promise(function(res, rej){
+        var t = db.transaction(stores, mode), out;
+        t.oncomplete = function(){ res(out); };
+        t.onerror = t.onabort = function(){ rej(t.error || new Error("Storage error")); };
+        fn(t, function(v){ out = v; });
+      });
+    });
+  }
+  function getAll(store, indexName, key){
+    return run([store], "readonly", function(t, set){
+      var s = t.objectStore(store);
+      var r = indexName ? s.index(indexName).getAll(key) : s.getAll();
+      r.onsuccess = function(){ set(r.result); };
+    });
+  }
+  function getOne(store, key){
+    return run([store], "readonly", function(t, set){
+      var r = t.objectStore(store).get(key);
+      r.onsuccess = function(){ set(r.result); };
+    });
+  }
+  function getMany(store, keys){
+    return run([store], "readonly", function(t, set){
+      var s = t.objectStore(store), out = {};
+      keys.forEach(function(k){ var r = s.get(k); r.onsuccess = function(){ if(r.result) out[k] = r.result; }; });
+      set(out);
+    });
+  }
+  function putRecs(store, recs){
+    return run([store], "readwrite", function(t){
+      var s = t.objectStore(store);
+      recs.forEach(function(r){ s.put(r); });
+    });
+  }
+  function putItem(item){ return putRecs("items", [item]); }
+  function putBatch(b){ b.updated = Date.now(); return putRecs("batches", [b]); }
+
+  var saveTimers = {};
+  function saveItemSoon(item){
+    clearTimeout(saveTimers[item.id]);
+    saveTimers[item.id] = setTimeout(function(){ delete saveTimers[item.id]; putItem(item).catch(storageErr); }, 300);
+  }
+  function storageErr(e){
+    var quota = e && (e.name==="QuotaExceededError" || /quota/i.test(e.message||""));
+    toast(quota ? "Browser storage is full. Export and delete an old batch to make room." : "Couldn't save: " + (e && e.message || e), true);
+  }
+  function askPersist(){
+    if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(function(){}); }
+  }
+
+  // ---------- batches ----------
+  function newBatchRec(name){
+    var now = Date.now();
+    return { id:uid(), name:name||"Untitled batch", currency:guessCurrency(), notes:"", created:now, updated:now };
+  }
+  function defaultBatchName(){
+    return new Date().toLocaleDateString(undefined, { month:"long", year:"numeric" }) + " expenses";
+  }
+  function sortBatches(){ S.batches.sort(function(a,b){ return b.updated-a.updated; }); }
+
+  function selectBatch(id){
+    var b = S.batches.filter(function(x){ return x.id===id; })[0] || S.batches[0];
+    Object.keys(S.urls).forEach(function(k){ URL.revokeObjectURL(S.urls[k]); });
+    S.urls = {}; S.items = []; S.batch = b;
+    ui.batchId = b.id; saveUi();
+    return getAll("items", "batchId", b.id).then(function(items){
+      items.sort(byOrder);
+      return getMany("blobs", items.map(function(i){ return i.id; })).then(function(blobs){
+        if(S.batch !== b) return;              // switched again while loading
+        S.items = items.filter(function(i){ return blobs[i.id]; });
+        S.items.forEach(function(i){ S.urls[i.id] = URL.createObjectURL(blobs[i.id].img); });
+        render();
+      });
+    });
+  }
+
+  function deleteBatch(b){
+    return getAll("items", "batchId", b.id).then(function(items){
+      return run(["batches","items","blobs"], "readwrite", function(t){
+        items.forEach(function(i){ t.objectStore("items").delete(i.id); t.objectStore("blobs").delete(i.id); });
+        t.objectStore("batches").delete(b.id);
+      });
+    }).then(function(){
+      S.batches = S.batches.filter(function(x){ return x.id!==b.id; });
+      if(!S.batches.length){
+        var nb = newBatchRec(defaultBatchName());
+        S.batches.push(nb);
+        return putBatch(nb).then(function(){ return selectBatch(nb.id); });
+      }
+      return selectBatch(S.batches[0].id);
+    });
+  }
+
+  // ---------- images ----------
+  function loadImage(blob){
+    return new Promise(function(res, rej){
+      var url = URL.createObjectURL(blob), img = new Image();
+      img.onload = function(){ URL.revokeObjectURL(url); res(img); };
+      img.onerror = function(){ URL.revokeObjectURL(url); rej(new Error("unreadable image")); };
+      img.src = url;
+    });
+  }
+  function canvasBlob(c, type, q){
+    return new Promise(function(res, rej){
+      c.toBlob(function(b){ b ? res(b) : rej(new Error("Couldn't encode image")); }, type, q);
+    });
+  }
+  function outType(srcType){ return srcType==="image/png" ? "image/png" : "image/jpeg"; }
+
+  // Keep images as-is when reasonable, otherwise downscale/re-encode.
+  function normalizeImage(file){
+    return loadImage(file).then(function(img){
+      var w = img.naturalWidth, h = img.naturalHeight;
+      var scale = Math.min(1, MAX_EDGE/Math.max(w,h));
+      var keep = scale===1 && /^image\/(jpeg|png|webp)$/.test(file.type) && file.size < 4*1024*1024;
+      if(keep) return { blob:file, w:w, h:h };
+      var c = document.createElement("canvas");
+      c.width = Math.round(w*scale); c.height = Math.round(h*scale);
+      var ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      var type = outType(file.type);
+      return canvasBlob(c, type, 0.9).then(function(b){ return { blob:b, w:c.width, h:c.height }; });
+    });
+  }
+
+  var pdfjsP = null;
+  function loadPdfJs(){
+    if(pdfjsP) return pdfjsP;
+    pdfjsP = new Promise(function(res, rej){
+      var s = document.createElement("script");
+      s.crossOrigin = "anonymous"; // a CORS response, so the service worker can cache it for offline use
+      s.src = PDFJS_BASE + "pdf.min.js";
+      s.onload = function(){
+        if(!window.pdfjsLib){ rej(new Error("pdf.js failed to load")); return; }
+        // Fetch the worker here and hand pdf.js a blob URL: a cross-origin worker script loads
+        // from inside a worker, out of the service worker's reach, so it would not work offline.
+        var workerUrl = PDFJS_BASE + "pdf.worker.min.js";
+        fetch(workerUrl).then(function(r){ if(!r.ok) throw new Error(r.status); return r.blob(); })
+          .then(function(b){ return URL.createObjectURL(b); }, function(){ return workerUrl; })
+          .then(function(src){ window.pdfjsLib.GlobalWorkerOptions.workerSrc = src; res(window.pdfjsLib); });
+      };
+      s.onerror = function(){ pdfjsP = null; rej(new Error("PDF support needs an internet connection (loads pdf.js)")); };
+      document.head.appendChild(s);
+    });
+    return pdfjsP;
+  }
+  function readBuffer(file){
+    if(file.arrayBuffer) return file.arrayBuffer();
+    return new Promise(function(res, rej){ var fr = new FileReader(); fr.onload = function(){ res(fr.result); }; fr.onerror = function(){ rej(fr.error); }; fr.readAsArrayBuffer(file); });
+  }
+  function pdfPages(file, progress){
+    return Promise.all([loadPdfJs(), readBuffer(file)]).then(function(r){
+      return r[0].getDocument({ data:new Uint8Array(r[1]) }).promise;
+    }).then(function(doc){
+      var n = Math.min(doc.numPages, PDF_MAX_PAGES), out = [], i = 0;
+      if(doc.numPages > n) toast("Only the first " + n + " pages of " + file.name + " were added.", true);
+      function next(){
+        if(++i > n) return Promise.resolve(out);
+        progress(i, n);
+        return doc.getPage(i).then(function(page){
+          var v1 = page.getViewport({ scale:1 });
+          var vp = page.getViewport({ scale:Math.min(4, PDF_EDGE/Math.max(v1.width, v1.height)) });
+          var c = document.createElement("canvas");
+          c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+          var ctx = c.getContext("2d");
+          ctx.fillStyle = "#fff"; ctx.fillRect(0,0,c.width,c.height);
+          return page.render({ canvasContext:ctx, viewport:vp }).promise.then(function(){
+            return canvasBlob(c, "image/jpeg", 0.92);
+          }).then(function(b){
+            out.push({ blob:b, w:c.width, h:c.height, name:file.name + (n>1 ? " · p" + i : "") });
+            return next();
+          });
+        });
+      }
+      return next();
+    });
+  }
+
+  function isPdf(f){ return f.type==="application/pdf" || /\.pdf$/i.test(f.name||""); }
+  function isImage(f){ return /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif)$/i.test(f.name||""); }
+
+  var adding = false;
+  function addFiles(list){
+    var files = Array.prototype.slice.call(list||[]).filter(function(f){ return isPdf(f) || isImage(f); });
+    if(!files.length){ toast("Nothing to add – use images (JPG, PNG…) or PDFs.", true); return; }
+    if(adding){ toast("Still adding the previous files…", true); return; }
+    adding = true; askPersist();
+    var added = [], failed = [], fi = 0, b = S.batch;
+    var last = S.items.length ? S.items[S.items.length-1].order : 0;
+
+    function store(src, name){
+      var item = { id:uid(), batchId:b.id, order:(last += 1), name:name, label:"", date:"", amount:"", category:"", note:"", w:src.w, h:src.h, mime:src.blob.type, edit:null, fromPdf:!!src.fromPdf, added:Date.now() };
+      return run(["items","blobs"], "readwrite", function(t){
+        t.objectStore("items").put(item);
+        t.objectStore("blobs").put({ id:item.id, orig:src.blob, img:src.blob });
+      }).then(function(){
+        if(S.batch !== b) return;
+        S.urls[item.id] = URL.createObjectURL(src.blob);
+        S.items.push(item); added.push(item);
+      });
+    }
+    function next(){
+      if(fi >= files.length) return Promise.resolve();
+      var f = files[fi++], label = "Adding " + fi + " of " + files.length;
+      toast(label + "…", false, 0);
+      var p = isPdf(f)
+        ? pdfPages(f, function(i,n){ toast(label + " – page " + i + " of " + n + "…", false, 0); }).then(function(pages){
+            return pages.reduce(function(acc, pg){ pg.fromPdf = true; return acc.then(function(){ return store(pg, pg.name); }); }, Promise.resolve());
+          })
+        : normalizeImage(f).then(function(src){ return store(src, f.name || "Pasted image"); });
+      return p.catch(function(e){
+        if(e && (e.name==="QuotaExceededError" || /quota/i.test(e.message||""))) throw e;
+        failed.push((f.name||"image") + (/heic|heif/i.test(f.name+f.type) ? " (HEIC isn't supported by this browser – export it as JPEG)" : " (" + (e && e.message || e) + ")"));
+      }).then(next);
+    }
+    next().catch(storageErr).then(function(){
+      adding = false;
+      b.updated = Date.now(); putBatch(b).catch(function(){});
+      render();
+      if(failed.length) toast("Couldn't add: " + failed.join("; "), true, 9000);
+      else toast("Added " + added.length + " receipt" + (added.length===1?"":"s") + ".");
+      if(added.length===1 && added[0].fromPdf) openCrop(added[0]);   // single PDF page: offer to snip right away
+      else if(added.length===1) openViewer(S.items.indexOf(added[0]));
+      showUsage();
+    });
+  }
+
+  // ---------- formatting ----------
+  function parseAmount(s){
+    if(s==null || s==="") return null;
+    var n = parseFloat(String(s).replace(/[^\d.,-]/g,"").replace(/,(?=\d{3}(\D|$))/g,"").replace(",", "."));
+    return isFinite(n) ? n : null;
+  }
+  function money(n){
+    try{ return new Intl.NumberFormat(undefined, { style:"currency", currency:S.batch.currency||"GBP" }).format(n); }
+    catch(e){ return (S.batch.currency||"") + " " + n.toFixed(2); }
+  }
+  function fmtDate(d, long){
+    if(!d) return "";
+    var dt = new Date(d + "T00:00:00");
+    if(isNaN(dt)) return d;
+    return dt.toLocaleDateString(undefined, long ? { day:"numeric", month:"short", year:"numeric" } : { day:"numeric", month:"short" });
+  }
+  function summary(){
+    var total = 0, missing = 0, dates = [], cats = {};
+    S.items.forEach(function(i){
+      var a = parseAmount(i.amount);
+      if(a==null) missing++; else { total += a; var c = i.category || "Uncategorised"; cats[c] = (cats[c]||0) + a; }
+      if(i.date) dates.push(i.date);
+    });
+    dates.sort();
+    return { count:S.items.length, total:total, missing:missing, from:dates[0], to:dates[dates.length-1], cats:cats };
+  }
+  function rangeText(sm){
+    if(!sm.from) return "";
+    return sm.from===sm.to ? fmtDate(sm.from, true) : fmtDate(sm.from, sm.from.slice(0,4)!==sm.to.slice(0,4)) + " – " + fmtDate(sm.to, true);
+  }
+
+  // ---------- render ----------
+  function render(){
+    document.title = S.batch.name + " · Expense Mosaic";
+    $("#title").textContent = S.batch.name;
+    $("#batchSel").innerHTML = S.batches.map(function(b){
+      return '<option value="' + esc(b.id) + '"' + (b.id===S.batch.id ? " selected" : "") + ">" + esc(b.name) + "</option>";
+    }).join("") + '<option value="__new">＋ New batch…</option>';
+    document.documentElement.style.setProperty("--tile", ui.tile + "px");
+    document.documentElement.style.setProperty("--pcols", ui.print.cols);
+    document.body.classList.toggle("nocap", !ui.captions);
+    document.body.classList.toggle("p-nocap", !ui.print.captions);
+    document.body.classList.toggle("p-nosum", !ui.print.summary);
+    document.body.classList.toggle("p-break", !!ui.print.pageBreak && ui.print.summary);
+    $("#sizeIn").value = ui.tile;
+    $("#capIn").checked = ui.captions;
+    renderStats();
+    $("#mosaic").innerHTML = S.items.map(tileHtml).join("");
+    $("#empty").hidden = S.items.length > 0;
+    renderCats();
+    layout();
+  }
+
+  function renderStats(){
+    var sm = summary();
+    var h = '<div class="stat"><span class="label">Receipts</span><b>' + sm.count + "</b></div>" +
+            '<div class="stat"><span class="label">Total</span><b>' + esc(money(sm.total)) + "</b></div>";
+    if(sm.missing) h += '<div class="stat warn"><span class="label">No amount</span><b>' + sm.missing + "</b></div>";
+    if(sm.from) h += '<div class="stat"><span class="label">Dates</span><b>' + esc(rangeText(sm)) + "</b></div>";
+    $("#stats").innerHTML = h;
+    renderPrintSummary(sm);
+  }
+
+  function capHtml(i){
+    var a = parseAmount(i.amount);
+    var meta = [fmtDate(i.date, true), i.category].filter(Boolean).join(" · ");
+    var blank = !i.label && a==null && !meta && !i.note;
+    return '<figcaption class="cap' + (blank ? " nodetail" : "") + '">' +
+      '<span class="who' + (i.label ? "" : " blank") + '">' + esc(i.label || "Add details") + "</span>" +
+      '<span class="amt' + (a==null ? " blank" : "") + '">' + (a==null ? "–" : esc(money(a))) + "</span>" +
+      (meta ? '<span class="meta">' + esc(meta) + "</span>" : "") +
+      (i.note ? '<span class="note">' + esc(i.note) + "</span>" : "") +
+      "</figcaption>";
+  }
+  function tileHtml(i, idx){
+    return '<figure class="tile" data-id="' + esc(i.id) + '">' +
+      '<div class="inner">' +
+        '<div class="ph" style="aspect-ratio:' + i.w + " / " + i.h + '"><img src="' + S.urls[i.id] + '" alt="' + esc(i.label || i.name) + '" draggable="false" /></div>' +
+        capHtml(i) +
+      "</div>" +
+      '<span class="num">' + (idx+1) + "</span>" +
+      '<div class="tools">' +
+        '<button type="button" class="grip" title="Drag to reorder" aria-label="Drag to reorder">⠿</button>' +
+        '<button type="button" data-act="crop" title="Crop &amp; rotate">✂</button>' +
+        '<button type="button" class="del" data-act="del" title="Delete">✕</button>' +
+      "</div>" +
+    "</figure>";
+  }
+  function refreshTile(item){
+    var el = $('.tile[data-id="' + item.id + '"]');
+    if(el){ var tmp = document.createElement("div"); tmp.innerHTML = tileHtml(item, S.items.indexOf(item)); el.replaceWith(tmp.firstChild); }
+    renderStats(); renderCats(); layout();
+  }
+
+  // Masonry: each tile spans enough 4px rows to fit its content; order stays left-to-right.
+  var layoutRaf = 0;
+  function layout(){
+    cancelAnimationFrame(layoutRaf);
+    layoutRaf = requestAnimationFrame(function(){
+      var tiles = $("#mosaic").children;
+      for(var k=0; k<tiles.length; k++){
+        var h = tiles[k].firstChild.getBoundingClientRect().height;
+        tiles[k].style.gridRowEnd = "span " + Math.max(1, Math.ceil((h + GAP)/ROW));
+      }
+    });
+  }
+
+  function renderCats(){
+    var seen = {};
+    DEFAULT_CATS.concat(S.items.map(function(i){ return i.category; })).forEach(function(c){ if(c) seen[c] = 1; });
+    $("#catList").innerHTML = Object.keys(seen).sort().map(function(c){ return '<option value="' + esc(c) + '">'; }).join("");
+  }
+
+  function renderPrintSummary(sm){
+    var b = S.batch;
+    var sub = [sm.count + " receipt" + (sm.count===1?"":"s"), "Total " + money(sm.total)];
+    if(sm.missing) sub.push(sm.missing + " without amount");
+    if(sm.from) sub.push(rangeText(sm));
+    sub.push("Printed " + new Date().toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" }));
+    var rows = S.items.map(function(i, idx){
+      var a = parseAmount(i.amount);
+      return "<tr><td>" + (idx+1) + "</td><td>" + esc(fmtDate(i.date, true)) + "</td><td>" + esc(i.label) + "</td><td>" + esc(i.category) + "</td><td>" + esc(i.note) + '</td><td class="r">' + (a==null ? "" : esc(money(a))) + "</td></tr>";
+    }).join("");
+    var catNames = Object.keys(sm.cats).sort();
+    var catRows = catNames.length > 1 ? catNames.map(function(c){
+      return '<tr class="cat"><td colspan="5">' + esc(c) + '</td><td class="r">' + esc(money(sm.cats[c])) + "</td></tr>";
+    }).join("") : "";
+    $("#psummary").innerHTML =
+      '<div class="phead"><h1>' + esc(b.name) + '</h1><p class="sub">' + esc(sub.join(" · ")) + "</p>" +
+      (b.notes ? '<p class="notes">' + esc(b.notes) + "</p>" : "") + "</div>" +
+      '<table class="ptable"><thead><tr><th>#</th><th>Date</th><th>Merchant</th><th>Category</th><th>Notes</th><th class="r">Amount</th></tr></thead>' +
+      "<tbody>" + rows + "</tbody><tfoot>" + catRows +
+      '<tr class="total"><td colspan="5">Total</td><td class="r">' + esc(money(sm.total)) + "</td></tr></tfoot></table>";
+  }
+
+  function showUsage(){
+    if(!(navigator.storage && navigator.storage.estimate)) return;
+    navigator.storage.estimate().then(function(e){
+      function mb(n){ return n > 1e9 ? (n/1e9).toFixed(1) + " GB" : Math.max(0.1, n/1e6).toFixed(1) + " MB"; }
+      $("#usage").textContent = "Storage used: " + mb(e.usage||0) + (e.quota ? " of ~" + mb(e.quota) : "");
+    }).catch(function(){});
+  }
+
+  // ---------- modals ----------
+  function openModal(id){ $("#"+id).hidden = false; }
+  function closeModal(id){
+    $("#"+id).hidden = true;
+    if(id==="viewer"){ viewIdx = -1; $("#vImg").removeAttribute("src"); }
+  }
+  function topModal(){
+    var open = Array.prototype.filter.call(document.querySelectorAll(".modal"), function(m){ return !m.hidden; });
+    return open[open.length-1];
+  }
+  document.addEventListener("click", function(e){
+    var m = e.target.closest(".modal");
+    if(!m) return;
+    if(e.target === m || e.target.closest("[data-close]")) closeModal(m.id);
+  });
+
+  // batch dialog
+  var batchDlgFor = null;    // null = creating
+  function openBatchDlg(b){
+    batchDlgFor = b;
+    $("#batchDlgTitle").textContent = b ? "Batch settings" : "New batch";
+    $("#bName").value = b ? b.name : defaultBatchName();
+    var cur = b ? b.currency : (S.batch ? S.batch.currency : guessCurrency());
+    var list = CURRENCIES.indexOf(cur) < 0 ? [cur].concat(CURRENCIES) : CURRENCIES;
+    $("#bCur").innerHTML = list.map(function(c){ return '<option' + (c===cur ? " selected" : "") + ">" + c + "</option>"; }).join("");
+    $("#bNotes").value = b ? b.notes : "";
+    $("#bDelete").hidden = !b;
+    openModal("batchDlg");
+    setTimeout(function(){ $("#bName").select(); }, 30);
+  }
+  $("#batchForm").addEventListener("submit", function(e){
+    e.preventDefault();
+    var b = batchDlgFor || newBatchRec();
+    b.name = $("#bName").value.trim() || "Untitled batch";
+    b.currency = $("#bCur").value;
+    b.notes = $("#bNotes").value;
+    closeModal("batchDlg");
+    putBatch(b).then(function(){
+      if(!batchDlgFor){ S.batches.push(b); }
+      sortBatches();
+      return batchDlgFor ? render() : selectBatch(b.id);
+    }).catch(storageErr);
+  });
+  $("#bDelete").addEventListener("click", function(){
+    var b = batchDlgFor;
+    var n = b===S.batch ? S.items.length : null;
+    if(!confirm("Delete “" + b.name + "”" + (n ? " and its " + n + " receipt" + (n===1?"":"s") : "") + "? This can't be undone.")) return;
+    closeModal("batchDlg");
+    deleteBatch(b).then(showUsage).catch(storageErr);
+  });
+  $("#batchEditBtn").addEventListener("click", function(){ openBatchDlg(S.batch); });
+  $("#batchSel").addEventListener("change", function(e){
+    if(e.target.value === "__new"){ e.target.value = S.batch.id; openBatchDlg(null); }
+    else selectBatch(e.target.value).catch(storageErr);
+  });
+
+  // viewer
+  function openViewer(idx){
+    if(idx < 0 || idx >= S.items.length) return;
+    viewIdx = idx;
+    var i = S.items[idx];
+    $("#vStage").classList.remove("zoom");
+    $("#vImg").src = S.urls[i.id];
+    $("#vImg").alt = i.label || i.name;
+    $("#vPos").textContent = (idx+1) + " / " + S.items.length;
+    $("#vPrev").disabled = idx===0;
+    $("#vNext").disabled = idx===S.items.length-1;
+    $("#fLabel").value = i.label; $("#fDate").value = i.date; $("#fAmount").value = i.amount;
+    $("#fCat").value = i.category; $("#fNote").value = i.note;
+    $("#vSrc").textContent = "Source: " + i.name + " · " + i.w + "×" + i.h + "px";
+    var dl = $("#vDownload");
+    dl.href = S.urls[i.id];
+    dl.download = ((idx+1) + "-" + (i.label || i.name.replace(/\.[^.]+$/, ""))).replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") + ({ "image/png":".png", "image/webp":".webp", "image/gif":".gif" }[i.mime] || ".jpg");
+    openModal("viewer");
+  }
+  [["fLabel","label"],["fDate","date"],["fAmount","amount"],["fCat","category"],["fNote","note"]].forEach(function(p){
+    $("#"+p[0]).addEventListener("input", function(e){
+      var i = S.items[viewIdx];
+      if(!i) return;
+      i[p[1]] = e.target.value;
+      saveItemSoon(i);
+      refreshTile(i);
+    });
+  });
+  $("#fAmount").addEventListener("blur", function(e){
+    var i = S.items[viewIdx], a = parseAmount(e.target.value);
+    if(i && a!=null && e.target.value !== a.toFixed(2)){ e.target.value = i.amount = a.toFixed(2); saveItemSoon(i); refreshTile(i); }
+  });
+  $("#vPrev").addEventListener("click", function(){ openViewer(viewIdx-1); });
+  $("#vNext").addEventListener("click", function(){ openViewer(viewIdx+1); });
+  $("#vImg").addEventListener("click", function(){ $("#vStage").classList.toggle("zoom"); });
+  $("#vCrop").addEventListener("click", function(){ openCrop(S.items[viewIdx]); });
+  $("#vDelete").addEventListener("click", function(){
+    var i = S.items[viewIdx], idx = viewIdx;
+    deleteItem(i).then(function(ok){
+      if(!ok) return;
+      if(S.items.length) openViewer(Math.min(idx, S.items.length-1)); else closeModal("viewer");
+    });
+  });
+
+  function deleteItem(i){
+    if(!confirm("Delete this receipt" + (i.label ? " (" + i.label + ")" : "") + "?")) return Promise.resolve(false);
+    return run(["items","blobs"], "readwrite", function(t){
+      t.objectStore("items").delete(i.id); t.objectStore("blobs").delete(i.id);
+    }).then(function(){
+      S.items.splice(S.items.indexOf(i), 1);
+      URL.revokeObjectURL(S.urls[i.id]); delete S.urls[i.id];
+      render(); showUsage();
+      return true;
+    }).catch(function(e){ storageErr(e); return false; });
+  }
+
+  // ---------- cropper ----------
+  var C = { item:null, img:null, rot:0, crop:null, mode:null, anchor:null, off:null, cw:0, ch:0 };
+  var FULL = { x:0, y:0, w:1, h:1 };
+  function openCrop(item){
+    getOne("blobs", item.id).then(function(rec){ return loadImage(rec.orig).then(function(img){ return { rec:rec, img:img }; }); }).then(function(r){
+      C.item = item; C.img = r.img; C.type = outType(r.rec.orig.type);
+      C.rot = item.edit ? item.edit.rot : 0;
+      C.crop = Object.assign({}, item.edit ? item.edit.crop : FULL);
+      openModal("cropper");
+      requestAnimationFrame(drawCrop);
+    }).catch(function(e){ toast("Couldn't open image: " + e.message, true); });
+  }
+  function rotDims(){
+    var iw = C.img.naturalWidth, ih = C.img.naturalHeight;
+    return C.rot % 180 ? { w:ih, h:iw } : { w:iw, h:ih };
+  }
+  function drawRotated(ctx){
+    var d = rotDims();
+    ctx.translate(d.w/2, d.h/2);
+    ctx.rotate(C.rot * Math.PI/180);
+    ctx.drawImage(C.img, -C.img.naturalWidth/2, -C.img.naturalHeight/2);
+  }
+  function drawCrop(){
+    if(!C.img) return;
+    var cv = $("#cropCanvas"), st = $("#cropStage"), d = rotDims();
+    var s = Math.min((st.clientWidth-16)/d.w, (st.clientHeight-16)/d.h);
+    var cw = C.cw = Math.max(1, Math.floor(d.w*s)), ch = C.ch = Math.max(1, Math.floor(d.h*s));
+    var dpr = window.devicePixelRatio || 1;
+    cv.style.width = cw + "px"; cv.style.height = ch + "px";
+    cv.width = Math.round(cw*dpr); cv.height = Math.round(ch*dpr);
+    var ctx = cv.getContext("2d");
+    ctx.setTransform(dpr*s, 0, 0, dpr*s, 0, 0);
+    drawRotated(ctx);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var r = { x:C.crop.x*cw, y:C.crop.y*ch, w:C.crop.w*cw, h:C.crop.h*ch };
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    ctx.beginPath(); ctx.rect(0,0,cw,ch); ctx.rect(r.x,r.y,r.w,r.h); ctx.fill("evenodd");
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.strokeRect(r.x+1, r.y+1, r.w-2, r.h-2);
+    ctx.fillStyle = "#fff";
+    [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]].forEach(function(p){ ctx.fillRect(p[0]-6, p[1]-6, 12, 12); });
+  }
+  function cropPoint(e){
+    var b = $("#cropCanvas").getBoundingClientRect();
+    return { x:Math.min(1, Math.max(0, (e.clientX-b.left)/b.width)), y:Math.min(1, Math.max(0, (e.clientY-b.top)/b.height)) };
+  }
+  function cropHit(p){
+    var c = C.crop, tx = 16/C.cw, ty = 16/C.ch;
+    var corners = { nw:[c.x,c.y,c.x+c.w,c.y+c.h], ne:[c.x+c.w,c.y,c.x,c.y+c.h], sw:[c.x,c.y+c.h,c.x+c.w,c.y], se:[c.x+c.w,c.y+c.h,c.x,c.y] };
+    for(var k in corners){
+      var q = corners[k];
+      if(Math.abs(p.x-q[0]) < tx && Math.abs(p.y-q[1]) < ty) return { mode:"corner", anchor:{ x:q[2], y:q[3] }, cursor:(k==="nw"||k==="se") ? "nwse-resize" : "nesw-resize" };
+    }
+    if(p.x>c.x && p.x<c.x+c.w && p.y>c.y && p.y<c.y+c.h && (c.w<1 || c.h<1)) return { mode:"move", cursor:"move" };
+    return { mode:"new", anchor:p, cursor:"crosshair" };
+  }
+  var cv = $("#cropCanvas");
+  cv.addEventListener("pointerdown", function(e){
+    if(e.button > 0) return;
+    var p = cropPoint(e), h = cropHit(p);
+    C.mode = h.mode; C.anchor = h.anchor; C.off = { x:p.x-C.crop.x, y:p.y-C.crop.y }; C.moved = false;
+    cv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  cv.addEventListener("pointermove", function(e){
+    var p = cropPoint(e);
+    if(!C.mode){ cv.style.cursor = cropHit(p).cursor; return; }
+    C.moved = true;
+    if(C.mode === "move"){
+      C.crop.x = Math.min(1-C.crop.w, Math.max(0, p.x-C.off.x));
+      C.crop.y = Math.min(1-C.crop.h, Math.max(0, p.y-C.off.y));
+    } else {
+      C.crop = { x:Math.min(C.anchor.x,p.x), y:Math.min(C.anchor.y,p.y), w:Math.abs(p.x-C.anchor.x), h:Math.abs(p.y-C.anchor.y) };
+    }
+    drawCrop();
+  });
+  function endCropDrag(){
+    if(!C.mode) return;
+    if(C.crop.w < 0.02 || C.crop.h < 0.02) C.crop = Object.assign({}, FULL);
+    C.mode = null; drawCrop();
+  }
+  cv.addEventListener("pointerup", endCropDrag);
+  cv.addEventListener("pointercancel", endCropDrag);
+
+  function rotate(dir){
+    var c = C.crop;
+    C.crop = dir > 0 ? { x:1-c.y-c.h, y:c.x, w:c.h, h:c.w } : { x:c.y, y:1-c.x-c.w, w:c.h, h:c.w };
+    C.rot = (C.rot + (dir > 0 ? 90 : 270)) % 360;
+    drawCrop();
+  }
+  $("#cRotL").addEventListener("click", function(){ rotate(-1); });
+  $("#cRotR").addEventListener("click", function(){ rotate(1); });
+  $("#cReset").addEventListener("click", function(){ C.rot = 0; C.crop = Object.assign({}, FULL); drawCrop(); });
+  $("#cApply").addEventListener("click", function(){
+    var item = C.item, c = C.crop, d = rotDims();
+    var identity = C.rot===0 && c.x<=0.001 && c.y<=0.001 && c.w>=0.999 && c.h>=0.999;
+    var out = document.createElement("canvas");
+    out.width = Math.max(1, Math.round(c.w*d.w)); out.height = Math.max(1, Math.round(c.h*d.h));
+    var ctx = out.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,out.width,out.height);
+    ctx.translate(-c.x*d.w, -c.y*d.h);
+    drawRotated(ctx);
+    var rotCrop = { rot:C.rot, crop:Object.assign({}, c) };
+    getOne("blobs", item.id).then(function(rec){
+      var made = identity ? Promise.resolve(rec.orig) : canvasBlob(out, C.type, 0.92);
+      return made.then(function(blob){
+        rec.img = blob;
+        item.edit = identity ? null : rotCrop;
+        item.w = identity ? C.img.naturalWidth : out.width;
+        item.h = identity ? C.img.naturalHeight : out.height;
+        item.mime = blob.type;
+        return run(["items","blobs"], "readwrite", function(t){ t.objectStore("blobs").put(rec); t.objectStore("items").put(item); })
+          .then(function(){
+            URL.revokeObjectURL(S.urls[item.id]);
+            S.urls[item.id] = URL.createObjectURL(blob);
+            closeModal("cropper"); C.img = null;
+            refreshTile(item);
+            if(viewIdx >= 0) openViewer(S.items.indexOf(item));
+            showUsage();
+          });
+      });
+    }).catch(storageErr);
+  });
+
+  // ---------- mosaic interactions ----------
+  var drag = null, suppressClick = false;
+  var mosaic = $("#mosaic");
+  mosaic.addEventListener("click", function(e){
+    if(suppressClick){ suppressClick = false; return; }
+    var tile = e.target.closest(".tile");
+    if(!tile) return;
+    var item = S.items.filter(function(i){ return i.id===tile.dataset.id; })[0];
+    var act = e.target.closest("[data-act]");
+    if(act && act.dataset.act==="crop") openCrop(item);
+    else if(act && act.dataset.act==="del") deleteItem(item);
+    else if(!e.target.closest(".grip")) openViewer(S.items.indexOf(item));
+  });
+
+  // Drag-to-reorder with pointer events: whole tile for mouse, the ⠿ grip for touch/pen.
+  mosaic.addEventListener("pointerdown", function(e){
+    var tile = e.target.closest(".tile");
+    if(!tile || e.button > 0 || e.target.closest("[data-act]")) return;
+    var onGrip = !!e.target.closest(".grip");
+    if(e.pointerType !== "mouse" && !onGrip) return;
+    drag = { id:tile.dataset.id, el:tile, sx:e.clientX, sy:e.clientY, started:false, target:null, before:false };
+    if(onGrip) e.preventDefault();
+  });
+  window.addEventListener("pointermove", function(e){
+    if(!drag) return;
+    if(!drag.started){
+      if(Math.abs(e.clientX-drag.sx) + Math.abs(e.clientY-drag.sy) < 6) return;
+      var r = drag.el.getBoundingClientRect();
+      drag.started = true;
+      drag.dx = drag.sx - r.left; drag.dy = drag.sy - r.top;
+      drag.ghost = drag.el.cloneNode(true);
+      drag.ghost.className = "tile ghost";
+      drag.ghost.style.width = r.width + "px";
+      document.body.appendChild(drag.ghost);
+      drag.el.classList.add("dragging");
+    }
+    drag.ghost.style.left = (e.clientX - drag.dx) + "px";
+    drag.ghost.style.top = (e.clientY - drag.dy) + "px";
+    var under = document.elementFromPoint(e.clientX, e.clientY);
+    var t = under && under.closest(".mosaic .tile");
+    clearDropMarks();
+    if(t && t !== drag.el){
+      var b = t.getBoundingClientRect();
+      drag.target = t.dataset.id; drag.before = e.clientX < b.left + b.width/2;
+      t.classList.add(drag.before ? "drop-before" : "drop-after");
+    } else drag.target = null;
+    // auto-scroll near viewport edges
+    if(e.clientY < 50) window.scrollBy(0, -12); else if(e.clientY > window.innerHeight-50) window.scrollBy(0, 12);
+  });
+  function clearDropMarks(){
+    Array.prototype.forEach.call(document.querySelectorAll(".drop-before,.drop-after"), function(x){ x.classList.remove("drop-before","drop-after"); });
+  }
+  function endDrag(){
+    if(!drag) return;
+    var d = drag; drag = null;
+    if(!d.started) return;
+    suppressClick = true; setTimeout(function(){ suppressClick = false; }, 0);
+    d.ghost.remove(); d.el.classList.remove("dragging"); clearDropMarks();
+    if(!d.target) return;
+    var item = S.items.filter(function(i){ return i.id===d.id; })[0];
+    var rest = S.items.filter(function(i){ return i!==item; });
+    var ti = rest.map(function(i){ return i.id; }).indexOf(d.target) + (d.before ? 0 : 1);
+    item.order = orderBetween(rest[ti-1] ? rest[ti-1].order : null, rest[ti] ? rest[ti].order : null);
+    S.items.sort(byOrder);
+    putItem(item).catch(storageErr);
+    render();
+  }
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("pointercancel", endDrag);
+
+  if(window.ResizeObserver) new ResizeObserver(layout).observe(mosaic);
+  else window.addEventListener("resize", layout);
+
+  // ---------- adding: picker, drop, paste ----------
+  $("#addBtn").addEventListener("click", function(){ $("#fileIn").click(); });
+  $("#empty").addEventListener("click", function(){ $("#fileIn").click(); });
+  $("#fileIn").addEventListener("change", function(e){ addFiles(e.target.files); e.target.value = ""; });
+
+  var dragDepth = 0;
+  function hasFiles(e){ return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types||[], "Files") >= 0; }
+  window.addEventListener("dragenter", function(e){ if(hasFiles(e)){ dragDepth++; $("#dropzone").hidden = false; } });
+  window.addEventListener("dragleave", function(e){ if(hasFiles(e) && --dragDepth <= 0){ dragDepth = 0; $("#dropzone").hidden = true; } });
+  window.addEventListener("dragover", function(e){ if(hasFiles(e)) e.preventDefault(); });
+  window.addEventListener("drop", function(e){
+    if(!hasFiles(e)) return;
+    e.preventDefault(); dragDepth = 0; $("#dropzone").hidden = true;
+    addFiles(e.dataTransfer.files);
+  });
+
+  document.addEventListener("paste", function(e){
+    var items = e.clipboardData ? e.clipboardData.items : [];
+    var files = [];
+    for(var k=0; k<items.length; k++){
+      if(items[k].kind === "file"){
+        var f = items[k].getAsFile();
+        if(f && (isImage(f) || isPdf(f))) files.push(f);
+      }
+    }
+    if(!files.length) return;
+    e.preventDefault();
+    addFiles(files);
+  });
+
+  // ---------- toolbar ----------
+  $("#sizeIn").addEventListener("input", function(e){
+    ui.tile = +e.target.value; saveUi();
+    document.documentElement.style.setProperty("--tile", ui.tile + "px");
+    layout();
+  });
+  $("#capIn").addEventListener("change", function(e){
+    ui.captions = e.target.checked; saveUi();
+    document.body.classList.toggle("nocap", !ui.captions);
+    layout();
+  });
+  $("#sortBtn").addEventListener("click", function(){
+    S.items.forEach(function(i, k){ i._k = k; });
+    S.items.sort(function(a,b){
+      if(!a.date !== !b.date) return a.date ? -1 : 1;     // undated go last
+      return a.date < b.date ? -1 : a.date > b.date ? 1 : a._k-b._k;
+    });
+    S.items.forEach(function(i, k){ i.order = k+1; delete i._k; });
+    putRecs("items", S.items).catch(storageErr);
+    render();
+    toast("Sorted by date (undated receipts at the end).");
+  });
+
+  $("#printBtn").addEventListener("click", function(){
+    $("#pCols").value = ui.print.cols;
+    $("#pSummary").checked = ui.print.summary;
+    $("#pBreak").checked = ui.print.pageBreak;
+    $("#pCaptions").checked = ui.print.captions;
+    openModal("printDlg");
+  });
+  $("#printForm").addEventListener("submit", function(e){
+    e.preventDefault();
+    ui.print = { cols:+$("#pCols").value, summary:$("#pSummary").checked, pageBreak:$("#pBreak").checked, captions:$("#pCaptions").checked };
+    saveUi();
+    closeModal("printDlg");
+    render();
+    setTimeout(function(){ window.print(); }, 60);
+  });
+
+  // ---------- export / import ----------
+  function blobToDataUrl(b){
+    return new Promise(function(res, rej){ var fr = new FileReader(); fr.onload = function(){ res(fr.result); }; fr.onerror = function(){ rej(fr.error); }; fr.readAsDataURL(b); });
+  }
+  function slug(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "batch"; }
+  $("#exportBtn").addEventListener("click", function(){
+    var b = S.batch, items = S.items.slice();
+    toast("Preparing export…", false, 0);
+    getMany("blobs", items.map(function(i){ return i.id; })).then(function(blobs){
+      return Promise.all(items.map(function(i){
+        var rec = blobs[i.id];
+        return Promise.all([blobToDataUrl(rec.orig), rec.img===rec.orig ? null : blobToDataUrl(rec.img)]).then(function(u){
+          var meta = Object.assign({}, i); delete meta.batchId;
+          meta.orig = u[0]; if(u[1]) meta.img = u[1];
+          return meta;
+        });
+      }));
+    }).then(function(out){
+      var data = { format:EXPORT_FORMAT, version:1, exported:new Date().toISOString(), batch:{ name:b.name, currency:b.currency, notes:b.notes }, items:out };
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type:"application/json" }));
+      a.download = slug(b.name) + ".expense-mosaic.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
+      toast("Exported " + out.length + " receipt" + (out.length===1?"":"s") + ".");
+    }).catch(function(e){ toast("Export failed: " + e.message, true); });
+  });
+
+  $("#importBtn").addEventListener("click", function(){ $("#importIn").click(); });
+  $("#importIn").addEventListener("change", function(e){
+    var f = e.target.files[0]; e.target.value = "";
+    if(!f) return;
+    toast("Importing…", false, 0);
+    f.text().then(JSON.parse).then(function(d){
+      if(!d || d.format !== EXPORT_FORMAT || !Array.isArray(d.items)) throw new Error("not an Expense Mosaic export");
+      var b = newBatchRec(String(d.batch && d.batch.name || "Imported batch"));
+      if(d.batch && /^[A-Z]{3}$/.test(d.batch.currency)) b.currency = d.batch.currency;
+      b.notes = String(d.batch && d.batch.notes || "");
+      return Promise.all(d.items.map(function(x, k){
+        if(typeof x.orig !== "string" || x.orig.indexOf("data:image/") !== 0) return null;
+        return Promise.all([fetch(x.orig).then(function(r){ return r.blob(); }), typeof x.img==="string" && x.img.indexOf("data:image/")===0 ? fetch(x.img).then(function(r){ return r.blob(); }) : null]).then(function(bl){
+          var item = { id:uid(), batchId:b.id, order: typeof x.order==="number" ? x.order : k,
+            name:String(x.name||"image"), label:String(x.label||""), date:/^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : "",
+            amount:String(x.amount==null ? "" : x.amount), category:String(x.category||""), note:String(x.note||""),
+            w:+x.w || 1, h:+x.h || 1, mime:"", edit:x.edit && bl[1] ? x.edit : null, fromPdf:!!x.fromPdf, added:+x.added || Date.now() };
+          item.mime = (bl[1] || bl[0]).type;
+          return { item:item, blobs:{ id:item.id, orig:bl[0], img:bl[1] || bl[0] } };
+        });
+      })).then(function(recs){
+        recs = recs.filter(Boolean);
+        askPersist();
+        return run(["batches","items","blobs"], "readwrite", function(t){
+          t.objectStore("batches").put(b);
+          recs.forEach(function(r){ t.objectStore("items").put(r.item); t.objectStore("blobs").put(r.blobs); });
+        }).then(function(){
+          S.batches.push(b); sortBatches();
+          return selectBatch(b.id);
+        }).then(function(){ toast("Imported “" + b.name + "” (" + recs.length + " receipts)."); showUsage(); });
+      });
+    }).catch(function(err){ toast("Import failed: " + (err && err.message || err), true); });
+  });
+
+  // ---------- keyboard ----------
+  document.addEventListener("keydown", function(e){
+    var m = topModal();
+    if(e.key === "Escape" && m){ closeModal(m.id); return; }
+    if(m && m.id === "viewer" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+      if(e.key === "ArrowLeft") openViewer(viewIdx-1);
+      else if(e.key === "ArrowRight") openViewer(viewIdx+1);
+    }
+  });
+  window.addEventListener("resize", function(){ if(!$("#cropper").hidden) drawCrop(); });
+
+  // ---------- boot ----------
+  loadUi();
+  getAll("batches").then(function(bs){
+    S.batches = bs; sortBatches();
+    if(!bs.length){
+      var b = newBatchRec(defaultBatchName());
+      S.batches.push(b);
+      return putBatch(b).then(function(){ return selectBatch(b.id); });
+    }
+    return selectBatch(ui.batchId);
+  }).then(showUsage).catch(function(e){
+    $("#title").textContent = "Storage unavailable";
+    toast("Can't open browser storage (" + (e && e.message || e) + "). Private browsing can block it.", true, 0);
+  });
+
+  // Offline support when served over http(s); opened from file:// it simply runs without.
+  if("serviceWorker" in navigator && location.protocol.indexOf("http")===0){
+    navigator.serviceWorker.register("sw.js").catch(function(e){ console.warn("Service worker not registered", e); });
+  }
+})();
+</script>
+</body>
+</html>
