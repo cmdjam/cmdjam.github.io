@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Daymark</title>
+  <meta name="description" content="Rate your day against your own metrics and see the trends. Works offline; data stays on this device.">
+  <meta name="theme-color" content="#ECEFF3">
+  <link rel="icon" href="/daymark/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/daymark/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Daymark">
+  <script>
+    // Apply the saved theme before first paint so dark-mode users don't see a light flash.
+    try {
+      var t = localStorage.getItem('daymark-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
+  <script type="module" crossorigin src="/daymark/assets/index-zbMuO2r7.js"></script>
+  <link rel="stylesheet" crossorigin href="/daymark/assets/index-D7PKXYqf.css">
+<link rel="manifest" href="/daymark/manifest.webmanifest"></head>
+<body>
+  <div id="app"></div>
+  <noscript>Daymark needs JavaScript.</noscript>
+</body>
+</html>

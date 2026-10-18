@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Daymark: a scale of five tiles filled like a gauge up to the picked value -->
+  <rect width="512" height="512" rx="112" fill="#ECEFF3"/>
+  <g transform="translate(64 196)">
+    <rect x="0" y="0" width="64" height="120" rx="14" fill="#9CC5C2"/>
+    <rect x="80" y="0" width="64" height="120" rx="14" fill="#9CC5C2"/>
+    <rect x="160" y="0" width="64" height="120" rx="14" fill="#9CC5C2"/>
+    <rect x="240" y="0" width="64" height="120" rx="14" fill="#1F6F6B"/>
+    <rect x="320" y="0" width="64" height="120" rx="14" fill="#D5DBE2"/>
+    <g fill="#FFFFFF" fill-opacity=".35"><rect x="6" y="0" width="52" height="6" rx="3"/><rect x="86" y="0" width="52" height="6" rx="3"/><rect x="166" y="0" width="52" height="6" rx="3"/><rect x="246" y="0" width="52" height="6" rx="3"/></g>
+    <g fill="#000000" fill-opacity=".18"><rect x="6" y="112" width="52" height="8" rx="3"/><rect x="86" y="112" width="52" height="8" rx="3"/><rect x="166" y="112" width="52" height="8" rx="3"/><rect x="246" y="112" width="52" height="8" rx="3"/></g>
+    <rect x="326" y="0" width="52" height="8" rx="3" fill="#1B2430" fill-opacity=".12"/>
+  </g>
+  <rect x="64" y="350" width="160" height="14" rx="7" fill="#1B2430" fill-opacity=".85"/>
+</svg>
