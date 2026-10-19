@@ -25,6 +25,9 @@ function draw(app, dlg) {
     <label class="field"><span>Theme</span>
       <select name="theme">${opt('auto', 'Match system', s.theme)}${opt('light', 'Light', s.theme)}${opt('dark', 'Dark', s.theme)}</select></label>
 
+    <div class="row"><button type="button" class="btn" data-baseline="">Edit weekday baselines</button></div>
+    <p class="hint">A typical plan for each weekday. Each day's plan starts from it, and you only paint what's different.</p>
+
     <h3 class="label section">Data</h3>
     <p class="hint">${n} day${n === 1 ? '' : 's'} recorded. ${store.isPersistent()
       ? 'Saved automatically in this browser.'

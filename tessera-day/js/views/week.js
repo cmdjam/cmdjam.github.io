@@ -14,7 +14,7 @@ export function renderWeek(app, root) {
   const layers = compare ? ['plan', 'actual'] : [app.ui.layer];
   root.innerHTML = `<div class="dayview">
     <div class="maincol">
-      <div class="layerrow">${layerSegHTML(app)}</div>
+      <div class="layerrow">${layerSegHTML(app)}${app.ui.layer === 'actual' ? '' : '<button type="button" class="btn" data-baseline="" title="Edit the weekday baselines plans start from">Baselines</button>'}</div>
       <div class="panel weekgrid${compare ? ' cmp' : ''}">${keys.map(k => {
         // Compact per-day totals (rounded hours) so they fit narrow columns; the stats panel has exact figures.
         const short = m => (m >= 60 ? Math.round(m / 60) + 'h' : m + 'm');
@@ -39,12 +39,12 @@ export function renderWeek(app, root) {
   // Size canvases from the laid-out column width: tile height scales with it (5–10px).
   const st = paintStyle(app);
   root.querySelectorAll('.wday').forEach(btn => {
-    const day = app.day(btn.dataset.key);
+    const key = btn.dataset.key;
     btn.querySelectorAll('canvas').forEach(cv => {
       const w = cv.parentElement.clientWidth / layers.length - (compare ? 2 : 0);
       const th = Math.max(5, Math.min(10, Math.floor(w / 10)));
       const { g, dpr } = setupCanvas(cv, w, th * 24);
-      drawDay(g, dpr, 0, 0, cv.width, cv.height, day, cv.dataset.layer, st, app.settings.quantum);
+      drawDay(g, dpr, 0, 0, cv.width, cv.height, app.layerIfAny(key, cv.dataset.layer), st, app.settings.quantum);
     });
   });
 }

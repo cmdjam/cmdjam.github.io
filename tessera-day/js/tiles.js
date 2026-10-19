@@ -23,9 +23,10 @@ export function paintStyle(app, el = document.documentElement) {
   return { empty: v('--empty'), hi: v('--hi'), lo: v('--lo'), ink: v('--ink'), color: id => app.color(id) };
 }
 
-// Draw one day's layer into the device-pixel rect (x, y, w, h). `day` may be null (empty day).
-export function drawDay(g, dpr, x, y, w, h, day, layer, st, fallbackQ = 60) {
-  const q = day ? day.q : fallbackQ, arr = day ? day[layer] : null;
+// Draw one day's layer (array of category ids, or null for an empty day) into the device-pixel
+// rect (x, y, w, h). Tessera length comes from the array; empty days use fallbackQ.
+export function drawDay(g, dpr, x, y, w, h, arr, st, fallbackQ = 60) {
+  const q = arr ? 1440 / arr.length : fallbackQ;
   const cols = 60 / q, tw = w / cols, th = h / 24;
   const big = th / dpr >= BEVEL_MIN;
   if (!arr && !big) { g.fillStyle = st.empty; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); return; }

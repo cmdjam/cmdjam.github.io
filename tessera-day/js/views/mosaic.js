@@ -99,7 +99,7 @@ function draw(app, cv, keys, layer) {
 
   const H = Math.ceil(Math.max(...cells.map(c => c.y + c.h))) + 2;
   const { g, dpr } = setupCanvas(cv, W, H);
-  for (const c of cells) drawDay(g, dpr, c.x * dpr, c.y * dpr, c.w * dpr, c.h * dpr, app.day(c.key), layer, st, q);
+  for (const c of cells) drawDay(g, dpr, c.x * dpr, c.y * dpr, c.w * dpr, c.h * dpr, app.layerIfAny(c.key, layer), st, q);
   for (const [text, x, y, align, strong] of labels) {
     g.font = `${strong ? 700 : 500} ${10 * dpr}px ${MONO}`;
     g.fillStyle = strong ? ink : faint;

@@ -2,7 +2,7 @@
 // Bump VERSION whenever any file in ASSETS changes: the browser sees the new sw.js, installs the
 // new set into a fresh cache, and the old cache is deleted on activate. Each version is served
 // whole, so files from different releases never mix.
-const VERSION = 'tessera-day-903e347298f2';
+const VERSION = 'tessera-day-96b4336c8ecb';
 const ASSETS = [
   './',
   'index.html',
@@ -20,6 +20,7 @@ const ASSETS = [
   'js/views/day.js',
   'js/views/week.js',
   'js/views/mosaic.js',
+  'js/views/baseline.js',
   'icons/icon.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',

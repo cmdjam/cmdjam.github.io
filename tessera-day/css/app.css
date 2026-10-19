@@ -237,3 +237,17 @@ input[type=color]::-moz-color-swatch{border:0;border-radius:5px;}
 .mosaicpanel{padding:12px;}
 canvas.mosaic{display:block;width:100%;touch-action:manipulation;}
 @media (max-width:520px){ .layerrow .seg.scope{min-width:0;flex:1;} .mosaicpanel{padding:10px 8px;} }
+
+/* ---------- weekday baselines ---------- */
+/* A plan tile that differs from its weekday baseline gets a corner mark (removed tiles too). */
+.t.v::after{content:"";position:absolute;top:0;right:0;width:0;height:0;border-top:8px solid rgba(255,255,255,.92);border-left:8px solid transparent;border-top-right-radius:3px;pointer-events:none;}
+.t.v:not(.f)::after{border-top-color:var(--faint);}
+.planbar{display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;margin:0 0 10px;padding:7px 8px 7px 12px;
+  border:1px solid var(--hair);border-radius:var(--radius);background:var(--panel);font-size:13px;color:var(--muted);}
+.planbar b{color:var(--ink);}
+.planbar-actions{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;}
+.planbar select.pick{border:1px solid var(--hair-strong);background:var(--panel);border-radius:8px;padding:5px 9px;font-size:12px;font-weight:600;min-height:28px;max-width:200px;}
+.chip.restore i{background:linear-gradient(135deg,var(--empty) 50%,var(--faint) 50%);box-shadow:inset 0 0 0 1px var(--hair-strong);}
+.chip.restore.on{--c:var(--ink);}
+.seg.wdays > *{position:relative;padding-left:2px;padding-right:2px;}
+.seg.wdays > .has::after{content:"";position:absolute;left:50%;bottom:3px;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:currentColor;opacity:.6;}

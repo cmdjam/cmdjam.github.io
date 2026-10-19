@@ -1,15 +1,19 @@
+import { RESTORE } from './model.js';
+
 // Pointer painting on a tile grid (tiles are `.t[data-i]` inside `grid`).
 // A stroke covers the continuous time range from the first tile to the tile under the pointer;
 // moving back shrinks it. A stroke paints, unless it starts on a tile that already has the
 // selected category (then it clears that category in the range) or the eraser is selected
-// (then it clears everything in the range). Mouse, touch and pen all go through pointer events;
+// (then it clears everything in the range). The RESTORE tool copies the baseline back over the
+// range, on grids that have one. Mouse, touch and pen all go through pointer events;
 // the CSS sets `touch-action: none` on tiles so dragging paints instead of scrolling.
 //
 // opts: {
 //   getCat()          selected category id, or null for the eraser
-//   values()          the layer array as currently stored
+//   values()          the layer array as currently shown
+//   baseline()        optional: the baseline under this grid (array or null), for the RESTORE tool
 //   render(i, v)      show value v on tile i (preview)
-//   status(s|null)    s = {a, b, erase, cat} while a stroke is active
+//   status(s|null)    s = {a, b, erase, restore, cat} while a stroke is active
 //   commit(arr)       stroke finished with changes
 // }
 export function attachPainter(grid, opts) {
@@ -27,10 +31,12 @@ export function attachPainter(grid, opts) {
     const a = Math.min(st.start, i), b = Math.max(st.start, i);
     for (let j = 0; j < st.base.length; j++) {
       let v = st.base[j];
-      if (j >= a && j <= b) v = !st.erase ? st.cat : st.cat == null || v === st.cat ? null : v;
+      if (j >= a && j <= b) {
+        v = st.restore ? st.restore[j] ?? null : !st.erase ? st.cat : st.cat == null || v === st.cat ? null : v;
+      }
       if (st.out[j] !== v) { st.out[j] = v; opts.render(j, v); }
     }
-    opts.status({ a, b, erase: st.erase, cat: st.cat });
+    opts.status({ a, b, erase: st.erase, restore: !!st.restore, cat: st.cat });
   }
 
   function finish(keep) {
@@ -49,7 +55,9 @@ export function attachPainter(grid, opts) {
     if (!t) return;
     e.preventDefault();
     const i = +t.dataset.i, base = opts.values().slice(), cat = opts.getCat();
-    st = { id: e.pointerId, start: i, cur: -1, base, out: base.slice(), cat, erase: cat == null || base[i] === cat };
+    if (cat === RESTORE && !opts.baseline) return; // this grid has no baseline (e.g. actual)
+    const restore = cat === RESTORE ? opts.baseline() || [] : null; // [] restores to empty
+    st = { id: e.pointerId, start: i, cur: -1, base, out: base.slice(), cat, restore, erase: !restore && (cat == null || base[i] === cat) };
     try { grid.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
     update(i);
   });

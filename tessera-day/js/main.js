@@ -6,6 +6,7 @@ import { openSettings } from './settings.js';
 import { renderDay } from './views/day.js';
 import { renderWeek, weekKeys } from './views/week.js';
 import { renderMosaic } from './views/mosaic.js';
+import { renderBaseline, weekdayName } from './views/baseline.js';
 
 const fmt = (k, o) => M.parseKey(k).toLocaleDateString(undefined, o);
 const thisYear = k => M.parseKey(k).getFullYear() === new Date().getFullYear();
@@ -44,35 +45,83 @@ const VIEWS = {
     // URL argument: 2026-10 for a month, 2026 for a year.
     arg: k => k.slice(0, app.ui.scope === 'year' ? 4 : 7),
   },
+  // The weekday baseline editor works on a weekday (0 = Sunday), not a date: #/baseline/1.
+  baseline: {
+    render: renderBaseline,
+    head: () => ({ eyebrow: 'Baseline', title: weekdayName(app.ui.wd) }),
+    cur: () => app.ui.wd,
+    step: (wd, dir) => (wd + dir + 7) % 7,
+    today: () => new Date().getDay(),
+    hasToday: () => app.ui.wd === new Date().getDay(),
+  },
 };
 const UI_KEY = 'tessera-day-ui-v1';
 const darkMQ = matchMedia('(prefers-color-scheme: dark)');
 
 export const app = {
   data: M.starterData(),
-  ui: { view: 'day', date: M.todayKey(), layer: 'actual', cat: null, scope: 'month' },
+  ui: { view: 'day', date: M.todayKey(), layer: 'actual', cat: null, scope: 'month', wd: new Date().getDay() },
   dark: false,
   colors: new Map(),
-  history: [],   // undo stack: { key, prev } where prev is the day record before the change (or null)
+  // Undo stack: { key, prev } with the day record before the change (or null),
+  // or { baselines } with the baseline list before a baseline edit.
+  history: [],
+  baseCache: new Map(),   // resampled baseline layers; cleared whenever baselines change
 
   get settings() { return this.data.settings; },
   cat(id) { return this.data.categories.find(c => c.id === id) || null; },
   color(id) { return this.colors.get(id) || 'transparent'; },
   day(key) { return this.data.days[key] || null; },
   dayQ(key) { return this.day(key)?.q ?? this.settings.quantum; },
-  layer(key, layer) { return this.day(key)?.[layer] ?? M.emptyLayer(this.dayQ(key)); },
 
+  // The weekday baseline in force on `key`, resampled to tessera length q (null if there is none).
+  basePlan(key, q = this.dayQ(key)) {
+    const b = M.baselineAt(this.data.baselines, key), wd = M.parseKey(key).getDay(), arr = b?.days[wd];
+    if (!arr) return null;
+    const ck = `${b.from}|${wd}|${q}`;
+    if (!this.baseCache.has(ck)) this.baseCache.set(ck, M.resample(arr, b.q, q));
+    return this.baseCache.get(ck);
+  },
+  // A layer as shown. The plan is the day's variations on top of its baseline.
+  layer(key, layer) {
+    const day = this.day(key), q = this.dayQ(key);
+    if (layer === 'actual') return day?.actual ?? M.emptyLayer(q);
+    return M.composePlan(day?.plan ?? M.emptyLayer(q), this.basePlan(key, q));
+  },
+  // Like layer(), but null when there's nothing to draw (lets canvas views skip empty days).
+  layerIfAny(key, layer) {
+    if (!this.day(key) && (layer === 'actual' || !this.basePlan(key))) return null;
+    return this.layer(key, layer);
+  },
+
+  // arr is the layer as shown; plan edits are stored as variations from the baseline.
   setLayer(key, layer, arr) {
     const q = 1440 / arr.length;
     const day = this.day(key) ? { ...this.day(key) } : { q, plan: M.emptyLayer(q), actual: M.emptyLayer(q) };
-    day[layer] = arr;
+    day[layer] = layer === 'plan' ? M.planOverrides(arr, this.basePlan(key, q)) : arr;
     this.putDay(key, day);
   },
+  resetPlan(key) {
+    const day = this.day(key);
+    if (day) this.putDay(key, { ...day, plan: M.emptyLayer(day.q) });
+  },
+  // Weekday baseline edits apply from today on; past days keep the version they had.
+  setBaseline(wd, arr) {
+    this.pushHistory({ baselines: this.data.baselines });
+    this.data.baselines = M.withBaseline(this.data.baselines, M.todayKey(), wd, arr, this.settings.quantum);
+    this.baselinesChanged();
+  },
+  baselinesChanged() {
+    this.baseCache.clear();
+    this.saveMeta();
+    this.render();
+  },
+  pushHistory(h) {
+    this.history.push(h);
+    if (this.history.length > 100) this.history.shift();
+  },
   putDay(key, day, { undoable = true } = {}) {
-    if (undoable) {
-      this.history.push({ key, prev: this.data.days[key] || null });
-      if (this.history.length > 100) this.history.shift();
-    }
+    if (undoable) this.pushHistory({ key, prev: this.data.days[key] || null });
     if (M.isEmptyDay(day)) delete this.data.days[key];
     else this.data.days[key] = day;
     store.saveDay(key, this.data.days[key] || null);
@@ -81,8 +130,13 @@ export const app = {
   undo() {
     const h = this.history.pop();
     if (!h) return;
-    this.putDay(h.key, h.prev || {}, { undoable: false });
-    if (this.ui.view === 'day' && h.key !== this.ui.date) this.go('day', h.key);
+    if (h.baselines) {
+      this.data.baselines = h.baselines;
+      this.baselinesChanged();
+    } else {
+      this.putDay(h.key, h.prev || {}, { undoable: false });
+      if (this.ui.view === 'day' && h.key !== this.ui.date) this.go('day', h.key);
+    }
     toast('Undone');
   },
   convertDay(key, q) {
@@ -91,6 +145,7 @@ export const app = {
   replaceData(data) {
     this.data = data;
     this.history = [];
+    this.baseCache.clear();
     if (!this.cat(this.ui.cat)) this.ui.cat = data.categories[0]?.id ?? null;
     store.saveAll(data);
     this.saveUi();
@@ -102,9 +157,14 @@ export const app = {
     this.data.categories.forEach((c, i) => { c.order = i + 1; });
     for (const [key, day] of Object.entries(this.data.days)) {
       if (!M.LAYERS.some(l => day[l].includes(id))) continue;
-      for (const l of M.LAYERS) day[l] = day[l].map(v => (v === id ? null : v));
+      day.actual = day.actual.map(v => (v === id ? null : v));
+      day.plan = day.plan.map(v => (v === id ? M.CLEAR : v)); // cleared, not handed back to the baseline
       if (M.isEmptyDay(day)) delete this.data.days[key];
     }
+    this.data.baselines = this.data.baselines
+      // Keep versions even if they end up empty: an empty version still means "no baseline from here on".
+      .map(b => ({ ...b, days: b.days.map(a => (a && a.includes(id) ? a.map(v => (v === id ? null : v)) : a)).map(a => (M.isEmptyLayer(a) ? null : a)) }));
+    this.baseCache.clear();
     this.history = []; // older snapshots may still reference the deleted id
     store.saveAll(this.data);
     this.render();
@@ -128,7 +188,9 @@ export const app = {
     document.documentElement.dataset.theme = this.settings.theme === 'auto' ? '' : this.settings.theme;
     this.refreshColors();
     $('meta[name="theme-color"]').content = this.dark ? '#12161C' : '#ECEFF3';
-    if (ui.cat !== null && !this.cat(ui.cat)) ui.cat = this.data.categories[0]?.id ?? null;
+    // The restore brush only makes sense on a day's plan.
+    const restoreOk = ui.view === 'day' && ui.layer !== 'actual';
+    if (ui.cat === M.RESTORE ? !restoreOk : ui.cat !== null && !this.cat(ui.cat)) ui.cat = this.data.categories[0]?.id ?? null;
 
     const view = VIEWS[ui.view], head = view.head(ui.date);
     $('#eyebrow').textContent = 'Tessera Day · ' + head.eyebrow;
@@ -147,7 +209,9 @@ function route() {
   const [, view, arg = ''] = location.hash.split('/');
   const { ui } = app;
   ui.view = VIEWS[view] ? view : 'day';
-  if (ui.view === 'mosaic') {
+  if (ui.view === 'baseline') {
+    ui.wd = /^[0-6]$/.test(arg) ? +arg : new Date().getDay();
+  } else if (ui.view === 'mosaic') {
     // Keep the focused date when it's inside the requested period, else use the period's first day.
     const m = arg.match(/^(\d{4})(?:-(\d{2}))?$/);
     if (m) {
@@ -162,18 +226,27 @@ function route() {
 }
 
 function step(dir) {
-  app.go(app.ui.view, VIEWS[app.ui.view].step(app.ui.date, dir));
+  const v = VIEWS[app.ui.view];
+  app.go(app.ui.view, v.step(v.cur ? v.cur() : app.ui.date, dir));
 }
 
 $('#prev').onclick = () => step(-1);
 $('#next').onclick = () => step(1);
-$('#today').onclick = () => app.go(app.ui.view, M.todayKey());
+$('#today').onclick = () => app.go(app.ui.view, VIEWS[app.ui.view].today?.() ?? M.todayKey());
 $('#settingsBtn').onclick = () => openSettings(app);
 $('#tabs').addEventListener('click', e => {
   const a = e.target.closest('[data-view]');
   if (!a) return;
   e.preventDefault();
   app.go(a.dataset.view, app.ui.date);
+});
+// Links to the baseline editor anywhere in the page (data-baseline="<weekday>").
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-baseline]');
+  if (!a) return;
+  e.preventDefault();
+  a.closest('dialog')?.close();
+  app.go('baseline', a.dataset.baseline || new Date().getDay());
 });
 
 darkMQ.addEventListener('change', () => app.render());
@@ -187,7 +260,8 @@ addEventListener('resize', () => {
 });
 addEventListener('hashchange', route);
 
-// Keyboard: 1-9 pick a category, 0 the eraser, P/A/C the layer, arrows step, T today, Ctrl/Cmd+Z undo.
+// Keyboard: 1-9 pick a category, 0 the eraser, B the baseline brush (plan), P/A/C the layer,
+// arrows step, T today, Ctrl/Cmd+Z undo.
 addEventListener('keydown', e => {
   if (e.target.closest('input, textarea, select, dialog[open]')) return;
   const k = e.key.toLowerCase();
@@ -195,6 +269,7 @@ addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (/^[1-9]$/.test(k) && app.data.categories[k - 1]) app.ui.cat = app.data.categories[k - 1].id;
   else if (k === '0') app.ui.cat = null;
+  else if (k === 'b' && app.ui.view === 'day' && app.ui.layer !== 'actual') app.ui.cat = M.RESTORE;
   else if (k === 'p' || k === 'a' || k === 'c') app.ui.layer = { p: 'plan', a: 'actual', c: 'compare' }[k];
   else if (k === 'arrowleft') return step(-1);
   else if (k === 'arrowright') return step(1);
@@ -212,7 +287,7 @@ else store.requestPersistence();
 
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { /* ignore */ }
-app.ui.cat = saved.cat === null || app.cat(saved.cat) ? saved.cat : app.data.categories[0]?.id ?? null;
+app.ui.cat = saved.cat === null || saved.cat === M.RESTORE || app.cat(saved.cat) ? saved.cat : app.data.categories[0]?.id ?? null;
 if (['plan', 'actual', 'compare'].includes(saved.layer)) app.ui.layer = saved.layer;
 if (saved.scope === 'year') app.ui.scope = 'year';
 route();

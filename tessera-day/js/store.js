@@ -1,5 +1,5 @@
 // Persistence: IndexedDB `tessera-day` v1 with two stores.
-//   meta: key "main" -> { version, settings, categories }
+//   meta: key "main" -> { version, settings, categories, baselines }
 //   days: key "YYYY-MM-DD" -> { q, plan, actual }   (empty days are deleted, not stored)
 // One record per day means a paint stroke rewrites only that day. If IndexedDB can't be
 // opened (some private modes), the app runs in memory and says so.
@@ -61,7 +61,7 @@ export async function load() {
   }
 }
 
-const metaOf = d => ({ version: d.version, settings: d.settings, categories: d.categories });
+const metaOf = d => ({ version: d.version, settings: d.settings, categories: d.categories, baselines: d.baselines });
 
 export const saveMeta = data => write(['meta'], m => { m.put(metaOf(data), 'main'); });
 export const saveDay = (key, day) => write(['days'], d => { if (day) d.put(day, key); else d.delete(key); });

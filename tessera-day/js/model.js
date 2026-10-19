@@ -3,6 +3,8 @@
 
 export const QUANTA = [5, 10, 15, 30, 60];
 export const LAYERS = ['plan', 'actual'];
+export const CLEAR = '';             // plan override meaning "nothing planned here", hiding the baseline
+export const RESTORE = '~baseline';  // painter tool that puts the baseline back (never a category id)
 export const DEFAULT_SETTINGS = { quantum: 15, weekStart: 1, theme: 'auto' };
 
 export const STARTER = [
@@ -23,9 +25,10 @@ export function newId() {
 
 export function starterData() {
   return {
-    version: 1,
+    version: 2,
     settings: { ...DEFAULT_SETTINGS },
     categories: STARTER.map(([name, color], i) => ({ id: newId(), name, color, order: i + 1 })),
+    baselines: [],
     days: {},
   };
 }
@@ -75,16 +78,55 @@ export function resample(arr, from, to) {
   return out;
 }
 
-const sameArr = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 export const isLossless = (arr, from, to) => sameArr(resample(resample(arr, from, to), to, from), arr);
 
 // ---------- days ----------
 
 export const isEmptyLayer = arr => !arr || arr.every(v => v == null);
+export const sameArr = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 export const isEmptyDay = day => !day || LAYERS.every(l => isEmptyLayer(day[l]));
 
 export function convertDay(day, to) {
   return { q: to, plan: resample(day.plan, day.q, to), actual: resample(day.actual, day.q, to) };
+}
+
+// ---------- weekday baselines ----------
+// baselines: [{ from: 'YYYY-MM-DD', q, days: [layer|null x 7] }], sorted by `from`, days indexed by
+// JS weekday (0 = Sunday). A date uses the latest version whose `from` is on or before it, so
+// editing a baseline creates a version from today and past days keep the plan they had.
+
+export function baselineAt(baselines, key) {
+  let found = null;
+  for (const b of baselines) { if (b.from <= key) found = b; else break; }
+  return found;
+}
+
+// A day's plan as shown: overrides on top of the baseline (both at the day's q; base may be null).
+export const composePlan = (overrides, base) =>
+  overrides.map((v, i) => (v === CLEAR ? null : v ?? (base ? base[i] : null)));
+
+// The overrides that turn `base` into `effective`: null where they agree, CLEAR where a base tile was removed.
+export const planOverrides = (effective, base) => effective.map((v, i) => {
+  const b = base ? base[i] : null;
+  return (v ?? null) === (b ?? null) ? null : v ?? CLEAR;
+});
+
+// Baselines after setting weekday `wd` to `arr` (null clears it) from date `from` onwards.
+// Edits on the same date update that version; an edit that makes it match the version before is dropped.
+export function withBaseline(baselines, from, wd, arr, q) {
+  const list = baselines.map(b => ({ ...b, days: b.days.slice() }));
+  let cur = baselineAt(list, from);
+  if (!cur || cur.from !== from) {
+    cur = { from, q: cur?.q ?? q, days: cur ? cur.days.slice() : Array(7).fill(null) };
+    list.push(cur);
+    list.sort((a, b) => (a.from < b.from ? -1 : 1));
+  }
+  cur.days[wd] = isEmptyLayer(arr) ? null : resample(arr, 1440 / arr.length, cur.q);
+  const i = list.indexOf(cur), prev = list[i - 1];
+  const same = (a, b) => (a && b ? sameArr(a, b) : a === b);
+  const redundant = prev ? prev.q === cur.q && cur.days.every((d, k) => same(d, prev.days[k])) : cur.days.every(d => !d);
+  if (redundant) list.splice(i, 1);
+  return list;
 }
 
 // ---------- stats ----------
@@ -95,10 +137,10 @@ export function minutesByCat(arr, q, into = {}) {
 }
 export const sumMinutes = totals => Object.values(totals).reduce((a, b) => a + b, 0);
 
-// Plan vs actual: of the planned minutes, how many were spent as planned.
-export function matchStats(day) {
+// Plan vs actual: of the planned minutes, how many were spent as planned. Arrays share tessera length q.
+export function matchStats(plan, actual, q) {
   let planned = 0, matched = 0;
-  if (day) day.plan.forEach((v, i) => { if (v) { planned += day.q; if (day.actual[i] === v) matched += day.q; } });
+  if (plan) plan.forEach((v, i) => { if (v) { planned += q; if (actual && actual[i] === v) matched += q; } });
   return { planned, matched, pct: planned ? Math.round(100 * matched / planned) : null };
 }
 
@@ -133,6 +175,20 @@ export function normalize(raw) {
   }
 
   const ids = new Set(categories.map(c => c.id));
+  const cleanLayer = (a, q, allowClear) =>
+    Array.isArray(a) && a.length === 1440 / q ? a.map(v => (ids.has(v) || (allowClear && v === CLEAR) ? v : null)) : null;
+
+  const byFrom = new Map();
+  for (const b of Array.isArray(raw.baselines) ? raw.baselines : []) {
+    if (!b || !isKey(b.from) || !QUANTA.includes(+b.q) || !Array.isArray(b.days)) continue;
+    const days = Array.from({ length: 7 }, (_, wd) => {
+      const a = cleanLayer(b.days[wd], +b.q, false);
+      return a && !isEmptyLayer(a) ? a : null;
+    });
+    byFrom.set(b.from, { from: b.from, q: +b.q, days });   // a repeated date keeps the last one
+  }
+  const baselines = [...byFrom.values()].sort((a, b) => (a.from < b.from ? -1 : 1));
+
   const days = {};
   for (const [k, d] of Object.entries(raw.days && typeof raw.days === 'object' ? raw.days : {})) {
     if (!isKey(k) || !d || typeof d !== 'object') continue;
@@ -143,12 +199,9 @@ export function normalize(raw) {
       if (!q) continue;
     }
     const day = { q };
-    for (const l of LAYERS) {
-      const a = Array.isArray(d[l]) && d[l].length === 1440 / q ? d[l] : null;
-      day[l] = a ? a.map(v => (ids.has(v) ? v : null)) : emptyLayer(q);
-    }
+    for (const l of LAYERS) day[l] = cleanLayer(d[l], q, l === 'plan') || emptyLayer(q);
     if (!isEmptyDay(day)) days[k] = day;
   }
 
-  return { version: 1, settings, categories, days };
+  return { version: 2, settings, categories, baselines, days };
 }
