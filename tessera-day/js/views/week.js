@@ -44,7 +44,8 @@ export function renderWeek(app, root) {
       const w = cv.parentElement.clientWidth / layers.length - (compare ? 2 : 0);
       const th = Math.max(5, Math.min(10, Math.floor(w / 10)));
       const { g, dpr } = setupCanvas(cv, w, th * 24);
-      drawDay(g, dpr, 0, 0, cv.width, cv.height, app.layerIfAny(key, cv.dataset.layer), st, app.settings.quantum);
+      const layer = cv.dataset.layer;
+      drawDay(g, dpr, 0, 0, cv.width, cv.height, app.layerIfAny(key, layer), st, app.settings.quantum, layer === 'actual' ? app.ghost(key) : null);
     });
   });
 }

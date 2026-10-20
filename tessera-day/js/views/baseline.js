@@ -30,8 +30,13 @@ function copySources(app, wd) {
 }
 
 export function renderBaseline(app, root) {
-  const wd = app.ui.wd, name = weekdayName(wd), cur = current(app);
-  const q = cur?.q ?? app.settings.quantum, arr = cur?.days[wd] ?? M.emptyLayer(q);
+  // Shown and edited at the current tessera length, whatever length the version was saved at.
+  const wd = app.ui.wd, name = weekdayName(wd), cur = current(app), q = app.settings.quantum;
+  const layerAtQ = () => {
+    const b = current(app), a = b?.days[wd];
+    return a ? M.resample(a, b.q, q) : M.emptyLayer(q);
+  };
+  const arr = layerAtQ();
   const order = Array.from({ length: 7 }, (_, i) => (app.settings.weekStart + i) % 7);
   const sources = copySources(app, wd);
   root.innerHTML = `<div class="dayview">
@@ -69,7 +74,7 @@ export function renderBaseline(app, root) {
   });
   root.querySelector('[data-clear]').addEventListener('click', () => app.setBaseline(wd, null));
   bindTiles(app, root.querySelector('.tgrid'), root.querySelector('.gridpanel .status'), {
-    values: () => current(app)?.days[wd] ?? M.emptyLayer(q),
+    values: layerAtQ,
     commit: a => app.setBaseline(wd, a),
   });
 }

@@ -3,8 +3,9 @@
 
 export const QUANTA = [5, 10, 15, 30, 60];
 export const LAYERS = ['plan', 'actual'];
-export const CLEAR = '';             // plan override meaning "nothing planned here", hiding the baseline
+export const CLEAR = '';             // stored "nothing here": hides the baseline (plan) or the plan (actual)
 export const RESTORE = '~baseline';  // painter tool that puts the baseline back (never a category id)
+export const GHOST = '~ghost';       // stands in for a ghost tile while an actual is edited (never stored)
 export const DEFAULT_SETTINGS = { quantum: 15, weekStart: 1, theme: 'auto' };
 
 export const STARTER = [
@@ -111,15 +112,43 @@ export const planOverrides = (effective, base) => effective.map((v, i) => {
   return (v ?? null) === (b ?? null) ? null : v ?? CLEAR;
 });
 
-// Baselines after setting weekday `wd` to `arr` (null clears it) from date `from` onwards.
-// Edits on the same date update that version; an edit that makes it match the version before is dropped.
+// ---------- actuals against the plan ----------
+// A stored actual holds category ids (painted), CLEAR (erased: nothing happened, never refilled)
+// and null (a gap). A day is tracked once anything is stored. When a tracked day has ended, its
+// gaps fill from the plan; until then, gaps (and whole untracked days) only show the plan as a ghost.
+
+export const isTracked = stored => !!stored && stored.some(v => v != null);
+
+export function composeActual(stored, plan, ended) {
+  const fill = ended && plan && isTracked(stored);
+  return stored.map((v, i) => (v === CLEAR ? null : v ?? (fill ? plan[i] : null)));
+}
+
+// Plan tiles to show faintly where nothing real is recorded (null where there's no ghost).
+export function ghostActual(stored, plan, ended) {
+  if (!plan || (ended && isTracked(stored))) return null;
+  return plan.map((p, i) => (stored && stored[i] != null ? null : p));
+}
+
+// What to store after an edit turned the shown actual `before` into `after`. Untouched tiles keep
+// what was stored (so gaps stay gaps); changed tiles store the id, or CLEAR where a planned tile was emptied.
+export const actualOverrides = (after, before, stored, plan) => after.map((v, i) =>
+  v === before[i] ? stored[i] ?? null : v ?? (plan && plan[i] ? CLEAR : null));
+
+// Baselines after setting weekday `wd` to `arr` (null clears it) from date `from` onwards, at
+// tessera length q. Edits on the same date update that version; an edit that makes it match the
+// version before is dropped. The edited version is re-gridded to q (older versions keep theirs).
 export function withBaseline(baselines, from, wd, arr, q) {
   const list = baselines.map(b => ({ ...b, days: b.days.slice() }));
+  const regrid = b => b.days.map(d => d && resample(d, b.q, q));
   let cur = baselineAt(list, from);
   if (!cur || cur.from !== from) {
-    cur = { from, q: cur?.q ?? q, days: cur ? cur.days.slice() : Array(7).fill(null) };
+    cur = { from, q, days: cur ? regrid(cur) : Array(7).fill(null) };
     list.push(cur);
     list.sort((a, b) => (a.from < b.from ? -1 : 1));
+  } else if (cur.q !== q) {
+    cur.days = regrid(cur);
+    cur.q = q;
   }
   cur.days[wd] = isEmptyLayer(arr) ? null : resample(arr, 1440 / arr.length, cur.q);
   const i = list.indexOf(cur), prev = list[i - 1];
@@ -199,7 +228,7 @@ export function normalize(raw) {
       if (!q) continue;
     }
     const day = { q };
-    for (const l of LAYERS) day[l] = cleanLayer(d[l], q, l === 'plan') || emptyLayer(q);
+    for (const l of LAYERS) day[l] = cleanLayer(d[l], q, true) || emptyLayer(q);
     if (!isEmptyDay(day)) days[k] = day;
   }
 

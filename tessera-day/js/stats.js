@@ -24,10 +24,10 @@ function bar(app, totals, span, label) {
 
 // keys: the dates covered; title: panel heading. In compare mode shows plan and actual together.
 export function statsHTML(app, keys, title, mode = app.ui.layer) {
-  // A period reaching into the future counts only up to today, or to the last day with data
-  // (so future plans still count); otherwise empty future days would read as unlogged time.
+  // Actuals over a period reaching into the future count only up to today, or to the last day
+  // with data; otherwise empty future days would read as unlogged time. A plan covers the whole period.
   const today = M.todayKey();
-  if (keys[keys.length - 1] > today) {
+  if (mode !== 'plan' && keys[keys.length - 1] > today) {
     const n = keys.findLastIndex(k => k <= today || app.day(k)) + 1;
     if (n > 0 && n < keys.length) { keys = keys.slice(0, n); title += ' so far'; }
   }

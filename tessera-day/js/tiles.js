@@ -24,8 +24,11 @@ export function paintStyle(app, el = document.documentElement) {
 }
 
 // Draw one day's layer (array of category ids, or null for an empty day) into the device-pixel
-// rect (x, y, w, h). Tessera length comes from the array; empty days use fallbackQ.
-export function drawDay(g, dpr, x, y, w, h, arr, st, fallbackQ = 60) {
+// rect (x, y, w, h). Tessera length comes from the array; empty days use fallbackQ. `ghost`
+// (optional, same length) is drawn faintly where the layer is empty: the plan under an untracked actual.
+export const GHOST_ALPHA = 0.3;
+export function drawDay(g, dpr, x, y, w, h, arr, st, fallbackQ = 60, ghost = null) {
+  if (!arr && ghost) arr = new Array(ghost.length).fill(null);
   const q = arr ? 1440 / arr.length : fallbackQ;
   const cols = 60 / q, tw = w / cols, th = h / 24;
   const big = th / dpr >= BEVEL_MIN;
@@ -38,7 +41,14 @@ export function drawDay(g, dpr, x, y, w, h, arr, st, fallbackQ = 60) {
       const x0 = Math.round(x + c * tw), x1 = Math.round(x + (c + 1) * tw) - gap;
       const v = arr && arr[r * cols + c];
       g.fillStyle = v ? st.color(v) : st.empty;
+      const gv = !v && ghost && ghost[r * cols + c];
       g.fillRect(x0, y0, x1 - x0, y1 - y0);
+      if (gv) {
+        g.globalAlpha = GHOST_ALPHA;
+        g.fillStyle = st.color(gv);
+        g.fillRect(x0, y0, x1 - x0, y1 - y0);
+        g.globalAlpha = 1;
+      }
       if (big && v) {
         g.fillStyle = st.hi; g.fillRect(x0, y0, x1 - x0, hi);
         g.fillStyle = st.lo; g.fillRect(x0, y1 - lo, x1 - x0, lo);

@@ -3,18 +3,20 @@ import * as M from '../model.js';
 import { attachPainter } from '../paint.js';
 import { paletteHTML, bindPalette } from '../palette.js';
 import { statsHTML } from '../stats.js';
-import { ask, esc } from '../ui.js';
+import { ask, esc, toast } from '../ui.js';
 import { weekdayName } from './baseline.js';
 
 const pad = n => String(n).padStart(2, '0');
 let nowTimer;
 
-// A tile is a variation when the plan differs from the baseline under it.
+// A tile is a variation when it differs from what's under it (the baseline under a plan, the plan
+// under an actual).
 const varied = (v, base, i) => base && (v ?? null) !== (base[i] ?? null);
 
 // A paintable grid of one layer. Rows are hours, columns are quanta within the hour.
-// base (optional) is the baseline under a plan: tiles that differ from it get a corner mark.
-export function tilesHTML(app, arr, q, { labels = true, now = -1, base = null, attrs = '' } = {}) {
+// base (optional): what the layer varies from; differing tiles get a corner mark.
+// ghost (optional): plan tiles to show faintly where nothing is recorded.
+export function tilesHTML(app, arr, q, { labels = true, now = -1, base = null, ghost = null, attrs = '' } = {}) {
   const cols = 60 / q;
   let h = `<div class="tgrid${labels ? '' : ' nolabels'}" style="--cols:${cols}" data-q="${q}" ${attrs}>`;
   if (labels) h += '<span class="mh"></span>';
@@ -22,30 +24,36 @@ export function tilesHTML(app, arr, q, { labels = true, now = -1, base = null, a
   for (let r = 0; r < 24; r++) {
     if (labels) h += `<span class="hr">${pad(r)}</span>`;
     for (let c = 0; c < cols; c++) {
-      const i = r * cols + c, v = arr[i];
-      h += `<i class="t${v ? ' f' : ''}${varied(v, base, i) ? ' v' : ''}${i === now ? ' now' : ''}" data-i="${i}"${v ? ` style="--c:${app.color(v)}"` : ''}></i>`;
+      const i = r * cols + c, v = arr[i], g = !v && ghost?.[i];
+      const cls = (v ? ' f' : '') + (g ? ' g' : '') + (!g && varied(v, base, i) ? ' v' : '') + (i === now ? ' now' : '');
+      h += `<i class="t${cls}" data-i="${i}"${v || g ? ` style="--c:${app.color(v || g)}"` : ''}></i>`;
     }
   }
   return h + '</div>';
 }
 
-// opts: { values(), commit(arr), baseline?() } as for attachPainter.
+// opts: { values(), commit(arr), baseline?() } as for attachPainter, or { readOnly: message }.
 export function bindTiles(app, grid, status, opts) {
   const q = +grid.dataset.q, tiles = [...grid.querySelectorAll('.t')];
   const idle = status.textContent, base = opts.baseline?.();
-  attachPainter(grid, {
+  if (opts.readOnly) {
+    grid.classList.add('ro');
+    grid.addEventListener('pointerdown', e => { if (e.target.closest('.t')) toast(opts.readOnly); });
+  } else attachPainter(grid, {
     getCat: () => app.ui.cat,
     ...opts,
     render(i, v) {
-      tiles[i].classList.toggle('f', !!v);
-      tiles[i].classList.toggle('v', !!varied(v, base, i));
-      if (v) tiles[i].style.setProperty('--c', app.color(v));
+      const g = v === M.GHOST && opts.ghostOf?.(i);   // back to a ghost (a cancelled stroke)
+      tiles[i].classList.toggle('g', !!g);
+      tiles[i].classList.toggle('f', !!v && !g);
+      tiles[i].classList.toggle('v', !g && !!varied(v, base, i));
+      if (v && (g || v !== M.GHOST)) tiles[i].style.setProperty('--c', app.color(g || v));
       else tiles[i].style.removeProperty('--c');
     },
     status(s) {
       if (!s) { status.textContent = idle; return; }
       const name = s.cat && !s.restore ? app.cat(s.cat).name : '';
-      const verb = s.restore ? 'Restore baseline' : !s.erase ? `Paint ${name}` : s.cat ? `Clear ${name}` : 'Erase';
+      const verb = s.restore ? (opts.restoreVerb || 'Restore') : !s.erase ? `Paint ${name}` : s.cat ? `Clear ${name}` : 'Erase';
       status.textContent = `${verb} · ${M.rangeLabel(s.a, s.b, q)} · ${M.fmtDur((s.b - s.a + 1) * q)}`;
     },
   });
@@ -53,10 +61,15 @@ export function bindTiles(app, grid, status, opts) {
   grid.addEventListener('mouseover', e => {
     const t = e.target.closest('.t');
     if (!t) return;
-    const i = +t.dataset.i, v = opts.values()[i];
-    t.title = M.rangeLabel(i, i, q) + (v ? ' · ' + app.cat(v).name : '') + (t.classList.contains('v') ? ' · varied from baseline' : '');
+    const i = +t.dataset.i, v = opts.values()[i] === M.GHOST ? null : opts.values()[i];
+    const g = t.classList.contains('g') && opts.ghostOf?.(i);
+    t.title = M.rangeLabel(i, i, q) + (v ? ' · ' + app.cat(v).name : g ? ` · planned: ${app.cat(g).name}` : '') +
+      (t.classList.contains('v') ? ` · differs from ${opts.baseName || 'baseline'}` : '');
   });
 }
+
+// What a layer's tiles vary from: the baseline under a plan, the plan under an actual.
+const underlying = (app, key, layer) => (layer === 'plan' ? app.basePlan(key) : app.planIfAny(key));
 
 // One layer of one day.
 export function gridHTML(app, key, layer, { labels = true } = {}) {
@@ -64,17 +77,28 @@ export function gridHTML(app, key, layer, { labels = true } = {}) {
   return tilesHTML(app, app.layer(key, layer), q, {
     labels,
     now: key === M.todayKey() ? M.nowSlot(q) : -1,
-    base: layer === 'plan' ? app.basePlan(key, q) : null,
+    base: underlying(app, key, layer),
+    ghost: layer === 'actual' ? app.ghost(key) : null,
     attrs: `data-key="${key}" data-layer="${layer}"`,
   });
 }
 
 export function bindGrid(app, grid, status) {
   const { key, layer } = grid.dataset;
+  if (layer === 'plan' && app.ui.planEdit !== key) {
+    const name = weekdayName(M.parseKey(key).getDay());
+    return bindTiles(app, grid, status, {
+      values: () => app.layer(key, layer),
+      readOnly: `The plan comes from the ${name} baseline. Use "Change this day only" to edit just this day.`,
+    });
+  }
   bindTiles(app, grid, status, {
-    values: () => app.layer(key, layer),
+    values: () => (layer === 'actual' ? app.actualForEdit(key) : app.layer(key, layer)),
     commit: arr => app.setLayer(key, layer, arr),
-    ...(layer === 'plan' ? { baseline: () => app.basePlan(key) } : {}),
+    baseline: () => underlying(app, key, layer),
+    restoreVerb: layer === 'plan' ? 'Restore baseline' : 'As planned',
+    baseName: layer === 'plan' ? 'baseline' : 'plan',
+    ghostOf: i => app.ghost(key)?.[i],
   });
 }
 
@@ -93,21 +117,49 @@ async function convert(app, key) {
   app.convertDay(key, to);
 }
 
-// Which baseline the plan follows, how much this day varies from it, and the way to edit or reset.
+// The plan comes from the weekday baseline. Changing a single day's plan is tucked behind
+// "Change this day only" (for holidays, trips and other known exceptions).
 function planBarHTML(app, key) {
   const wd = M.parseKey(key).getDay(), name = weekdayName(wd), base = app.basePlan(key);
-  const edit = `<button type="button" class="btn small" data-baseline="${wd}">${base ? 'Edit' : 'Set up'} ${esc(name)} baseline</button>`;
-  if (!base) {
-    const first = app.data.baselines[0]?.from;
-    const why = first && key < first
-      ? `Baselines start on ${M.parseKey(first).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, so this day has none.`
-      : `No ${esc(name)} baseline yet. Paint a typical ${esc(name)} once and every ${esc(name)} starts from it.`;
-    return `<div class="planbar"><span>${why}</span>${edit}</div>`;
-  }
   const n = app.layer(key, 'plan').filter((v, i) => varied(v, base, i)).length;
-  return `<div class="planbar"><span>Follows the <b>${esc(name)} baseline</b>${n ? ` · ${n} tesserae varied` : ''}</span>
-    <span class="planbar-actions">${edit}
-      <button type="button" class="btn small" data-reset ${n ? '' : 'disabled'} title="Drop this day's variations">Reset to baseline</button></span></div>`;
+  if (app.ui.planEdit === key) {
+    return `<div class="planbar"><span><b>Changing this day's plan only</b>${n ? ` · ${n} tesserae differ from the ${esc(name)} baseline` : ''}</span>
+      <span class="planbar-actions">
+        <button type="button" class="btn small" data-reset ${n ? '' : 'disabled'} title="Drop this day's changes">Reset to baseline</button>
+        <button type="button" class="btn small primary" data-plan-edit="">Done</button></span></div>`;
+  }
+  const edit = `<button type="button" class="btn small" data-baseline="${wd}">${base ? 'Edit' : 'Set up'} ${esc(name)} baseline</button>`;
+  const once = `<button type="button" class="btn small" data-plan-edit="${key}" title="For holidays, trips and other one-off days">Change this day only</button>`;
+  let why;
+  if (base) why = `From the <b>${esc(name)} baseline</b>${n ? ` · ${n} tesserae changed for this day` : ''}`;
+  else {
+    const first = app.data.baselines[0]?.from;
+    why = first && key < first
+      ? `Baselines start on ${M.parseKey(first).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, so this day has none.`
+      : `No ${esc(name)} baseline yet. Paint a typical ${esc(name)} once and every ${esc(name)} plan starts from it.`;
+  }
+  return `<div class="planbar"><span>${why}</span><span class="planbar-actions">${edit}${once}</span></div>`;
+}
+
+// How the day's actuals stand against the plan, with the shortcuts to fill or forget them.
+function actualBarHTML(app, key) {
+  const plan = app.planIfAny(key);
+  if (!plan) return '';
+  const today = M.todayKey(), stored = app.day(key)?.actual;
+  if (key > today) return '<div class="planbar"><span>Still to come. The plan is shown faintly.</span></div>';
+  const clear = '<button type="button" class="btn small" data-untrack title="Forget what was recorded for this day">Clear day</button>';
+  if (!M.isTracked(stored)) {
+    return `<div class="planbar"><span>Not tracked yet. The plan is shown faintly.</span>
+      <span class="planbar-actions"><button type="button" class="btn small primary" data-as-planned>Went as planned</button></span></div>`;
+  }
+  const actual = app.layer(key, 'actual'), ghost = app.ghost(key);
+  const n = actual.filter((v, i) => !ghost?.[i] && varied(v, plan, i)).length;
+  const diff = n ? `${n} tesserae differ from the plan` : 'Matches the plan so far';
+  return key === today
+    ? `<div class="planbar"><span>${diff}. Gaps show the plan faintly and fill from it when the day ends.</span>
+        <span class="planbar-actions"><button type="button" class="btn small" data-as-planned ${ghost?.some(Boolean) ? '' : 'disabled'}>Rest went as planned</button>${clear}</span></div>`
+    : `<div class="planbar"><span>${n ? `${n} tesserae differed from the plan` : 'Went as planned'}; untouched time is filled from it.</span>
+        <span class="planbar-actions">${clear}</span></div>`;
 }
 
 const LAYER_NAMES = { plan: 'Plan', actual: 'Actual', compare: 'Compare' };
@@ -148,8 +200,10 @@ export function renderDay(app, root) {
     <div class="maincol">
       ${convertNote(app, key)}
       <div class="layerrow">${layerSegHTML(app)}${undoButtonHTML(app)}</div>
-      ${layer === 'actual' ? '' : planBarHTML(app, key)}
-      ${paletteHTML(app, { restore: layer !== 'actual' })}
+      ${layer === 'plan' ? planBarHTML(app, key) : actualBarHTML(app, key)}
+      ${paletteHTML(app, { restore: layer !== 'plan'
+        ? { label: 'As planned', title: 'Paint the plan over a range' }
+        : app.ui.planEdit === key ? { label: 'Baseline', title: 'Paint the baseline back over a range' } : null })}
       ${grids}
     </div>
     <aside class="sidecol">${statsHTML(app, [key], key === M.todayKey() ? 'Today' : 'This day')}</aside>
@@ -159,6 +213,12 @@ export function renderDay(app, root) {
   root.querySelector('[data-undo]').addEventListener('click', () => app.undo());
   root.querySelector('[data-convert]')?.addEventListener('click', () => convert(app, key));
   root.querySelector('[data-reset]')?.addEventListener('click', () => app.resetPlan(key));
+  root.querySelector('[data-plan-edit]')?.addEventListener('click', e => {
+    app.ui.planEdit = e.currentTarget.dataset.planEdit || null;
+    app.render();
+  });
+  root.querySelector('[data-as-planned]')?.addEventListener('click', () => app.wentAsPlanned(key));
+  root.querySelector('[data-untrack]')?.addEventListener('click', () => app.untrack(key));
   root.querySelectorAll('.gridpanel').forEach(p => bindGrid(app, p.querySelector('.tgrid'), p.querySelector('.status')));
 
   // Keep the "now" tile current while the page stays open.

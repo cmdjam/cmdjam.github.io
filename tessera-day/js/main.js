@@ -60,7 +60,8 @@ const darkMQ = matchMedia('(prefers-color-scheme: dark)');
 
 export const app = {
   data: M.starterData(),
-  ui: { view: 'day', date: M.todayKey(), layer: 'actual', cat: null, scope: 'month', wd: new Date().getDay() },
+  // planEdit: the date whose plan is unlocked for per-day changes ("Change this day's plan"), else null.
+  ui: { view: 'day', date: M.todayKey(), layer: 'actual', cat: null, scope: 'month', wd: new Date().getDay(), planEdit: null },
   dark: false,
   colors: new Map(),
   // Undo stack: { key, prev } with the day record before the change (or null),
@@ -82,11 +83,26 @@ export const app = {
     if (!this.baseCache.has(ck)) this.baseCache.set(ck, M.resample(arr, b.q, q));
     return this.baseCache.get(ck);
   },
-  // A layer as shown. The plan is the day's variations on top of its baseline.
+  // A layer as shown. The plan is the day's variations on top of its baseline. The actual is what
+  // was recorded, with gaps filled from the plan once a tracked day has ended (see composeActual).
   layer(key, layer) {
     const day = this.day(key), q = this.dayQ(key);
-    if (layer === 'actual') return day?.actual ?? M.emptyLayer(q);
-    return M.composePlan(day?.plan ?? M.emptyLayer(q), this.basePlan(key, q));
+    const plan = M.composePlan(day?.plan ?? M.emptyLayer(q), this.basePlan(key, q));
+    if (layer === 'plan') return plan;
+    return M.composeActual(day?.actual ?? M.emptyLayer(q), plan, key < M.todayKey());
+  },
+  planIfAny(key) {
+    const p = this.layer(key, 'plan');
+    return p.some(Boolean) ? p : null;
+  },
+  // Plan tiles to show faintly on the actual layer where nothing real is recorded, or null.
+  ghost(key) {
+    return M.ghostActual(this.day(key)?.actual, this.planIfAny(key), key < M.todayKey());
+  },
+  // The actual as the painter edits it: ghost tiles are M.GHOST, so erasing one is a change.
+  actualForEdit(key) {
+    const a = this.layer(key, 'actual'), g = this.ghost(key);
+    return g ? a.map((v, i) => (g[i] ? M.GHOST : v)) : a;
   },
   // Like layer(), but null when there's nothing to draw (lets canvas views skip empty days).
   layerIfAny(key, layer) {
@@ -98,8 +114,22 @@ export const app = {
   setLayer(key, layer, arr) {
     const q = 1440 / arr.length;
     const day = this.day(key) ? { ...this.day(key) } : { q, plan: M.emptyLayer(q), actual: M.emptyLayer(q) };
-    day[layer] = layer === 'plan' ? M.planOverrides(arr, this.basePlan(key, q)) : arr;
+    day[layer] = layer === 'plan'
+      ? M.planOverrides(arr, this.basePlan(key, q))
+      : M.actualOverrides(arr, this.actualForEdit(key), day.actual, this.planIfAny(key)); // arr is from the painter
     this.putDay(key, day);
+  },
+  // "Went as planned": record the plan wherever nothing is recorded yet.
+  wentAsPlanned(key) {
+    const plan = this.planIfAny(key);
+    if (!plan) return;
+    const q = 1440 / plan.length, day = this.day(key) || { q, plan: M.emptyLayer(q), actual: M.emptyLayer(q) };
+    this.putDay(key, { ...day, actual: day.actual.map((v, i) => v ?? plan[i] ?? null) });
+  },
+  // Forget everything recorded for the day; it goes back to showing the plan as a ghost.
+  untrack(key) {
+    const day = this.day(key);
+    if (day) this.putDay(key, { ...day, actual: M.emptyLayer(day.q) });
   },
   resetPlan(key) {
     const day = this.day(key);
@@ -157,8 +187,9 @@ export const app = {
     this.data.categories.forEach((c, i) => { c.order = i + 1; });
     for (const [key, day] of Object.entries(this.data.days)) {
       if (!M.LAYERS.some(l => day[l].includes(id))) continue;
-      day.actual = day.actual.map(v => (v === id ? null : v));
-      day.plan = day.plan.map(v => (v === id ? M.CLEAR : v)); // cleared, not handed back to the baseline
+      // Cleared, not handed back to the baseline or plan.
+      day.actual = day.actual.map(v => (v === id ? M.CLEAR : v));
+      day.plan = day.plan.map(v => (v === id ? M.CLEAR : v));
       if (M.isEmptyDay(day)) delete this.data.days[key];
     }
     this.data.baselines = this.data.baselines
@@ -188,8 +219,9 @@ export const app = {
     document.documentElement.dataset.theme = this.settings.theme === 'auto' ? '' : this.settings.theme;
     this.refreshColors();
     $('meta[name="theme-color"]').content = this.dark ? '#12161C' : '#ECEFF3';
-    // The restore brush only makes sense on a day's plan.
-    const restoreOk = ui.view === 'day' && ui.layer !== 'actual';
+    // The restore brush paints the plan back onto actuals, or the baseline onto a plan being changed.
+    if (ui.planEdit && (ui.view !== 'day' || ui.planEdit !== ui.date)) ui.planEdit = null;
+    const restoreOk = ui.view === 'day' && (ui.layer !== 'plan' || ui.planEdit === ui.date);
     if (ui.cat === M.RESTORE ? !restoreOk : ui.cat !== null && !this.cat(ui.cat)) ui.cat = this.data.categories[0]?.id ?? null;
 
     const view = VIEWS[ui.view], head = view.head(ui.date);
@@ -269,7 +301,7 @@ addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (/^[1-9]$/.test(k) && app.data.categories[k - 1]) app.ui.cat = app.data.categories[k - 1].id;
   else if (k === '0') app.ui.cat = null;
-  else if (k === 'b' && app.ui.view === 'day' && app.ui.layer !== 'actual') app.ui.cat = M.RESTORE;
+  else if (k === 'b' && app.ui.view === 'day') app.ui.cat = M.RESTORE; // render() drops it where it doesn't apply
   else if (k === 'p' || k === 'a' || k === 'c') app.ui.layer = { p: 'plan', a: 'actual', c: 'compare' }[k];
   else if (k === 'arrowleft') return step(-1);
   else if (k === 'arrowright') return step(1);

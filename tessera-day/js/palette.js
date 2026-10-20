@@ -2,15 +2,15 @@
 import * as M from './model.js';
 import { $, esc, ask, toast } from './ui.js';
 
-// restore: offer the baseline brush (plan layers only).
-export function paletteHTML(app, { restore = false } = {}) {
+// restore: offer the restore brush, as { label, title }: "As planned" on actuals, "Baseline" on a plan.
+export function paletteHTML(app, { restore = null } = {}) {
   const chips = app.data.categories.map((c, i) =>
     `<button type="button" class="chip${app.ui.cat === c.id ? ' on' : ''}" data-cat="${c.id}" style="--c:${app.color(c.id)}"
        aria-pressed="${app.ui.cat === c.id}" title="${esc(c.name)}${i < 9 ? ` (${i + 1})` : ''}"><i></i>${esc(c.name)}</button>`).join('');
   return `<div class="pal" role="toolbar" aria-label="Categories">${chips}
     <button type="button" class="chip eraser${app.ui.cat === null ? ' on' : ''}" data-cat="" aria-pressed="${app.ui.cat === null}" title="Eraser (0)"><i></i>Eraser</button>
     ${restore ? `<button type="button" class="chip restore${app.ui.cat === M.RESTORE ? ' on' : ''}" data-cat="${M.RESTORE}" aria-pressed="${app.ui.cat === M.RESTORE}"
-       title="Paint the baseline back over a range (B)"><i></i>Baseline</button>` : ''}
+       title="${esc(restore.title)} (B)"><i></i>${esc(restore.label)}</button>` : ''}
     <button type="button" class="chip ghost" data-edit title="Add, rename, recolour, reorder or delete categories">✎ Edit</button>
   </div>`;
 }
