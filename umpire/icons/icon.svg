@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<!-- Umpire: a yellow card behind a red one. maskable.svg is the same art, full bleed. -->
+<rect width="512" height="512" rx="112" fill="#1B2430"/>
+<g transform="rotate(-12 256 256)">
+  <rect x="132" y="128" width="168" height="236" rx="18" fill="#E9B10A"/>
+  <rect x="132" y="340" width="168" height="24" rx="12" fill="#000" fill-opacity=".18"/>
+</g>
+<g transform="rotate(10 256 256)">
+  <rect x="216" y="150" width="168" height="236" rx="18" fill="#D7263D"/>
+  <rect x="216" y="150" width="168" height="12" rx="6" fill="#fff" fill-opacity=".28"/>
+  <rect x="216" y="362" width="168" height="24" rx="12" fill="#000" fill-opacity=".18"/>
+</g>
+</svg>
