@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.0.0 (da58b77a13bf)">
+  <meta name="app-version" content="1.0.1 (a87f523a0c81)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -803,7 +803,76 @@ function toOrbitData({ id, name, cadenceDays, healthState }) {
     healthState,
   };
 }
-return { MIN_RADIUS, MAX_RADIUS, radiusForCadence, speedForCadence, sizeForRadius, stablePhase, toOrbitData };
+
+/** Floor for the phase gap between planets on one orbit, in radians (TD-001's proposed nudge). */
+const MIN_PHASE_GAP = 0.05;
+
+/** Phase gap that keeps two planets on this orbit a planet's width apart along the arc. */
+const phaseGapFor = ({ planetSize, radius }) => Math.max(MIN_PHASE_GAP, planetSize / radius);
+
+/**
+ * TD-001: ids can hash to the same or adjacent phases (stablePhase has 100 steps of π/100), and
+ * planets on one radius share a speed, so they would overlap forever. Nudges phases on each radius
+ * apart to at least phaseGapFor (0.05 rad alone moves a planet only a few pixels). Phases live on
+ * a circle of length π (angleFor wraps there).
+ *
+ * Planets are placed oldest first (createdAt, then id), and each keeps its own phase unless that
+ * collides with one already placed, in which case it moves forward to the next free spot. So adding
+ * a contact moves only the newcomer, never a planet already on screen (removing one can let a
+ * planet it had displaced return to its own phase, and one whose cadence changes can push newer
+ * planets on its new orbit). Deterministic: depends only on the contacts,
+ * not their order. Returns new records.
+ */
+function separatePhases(orbitData) {
+  const out = orbitData.map((c) => ({ ...c }));
+  const byRadius = new Map();
+  for (const c of out) {
+    if (!byRadius.has(c.radius)) byRadius.set(c.radius, []);
+    byRadius.get(c.radius).push(c);
+  }
+  for (const group of byRadius.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => (a.createdAt ?? Infinity) - (b.createdAt ?? Infinity) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const gap = phaseGapFor(group[0]);
+    const placed = [];
+    for (const c of group) {
+      const p = freeSpot(c.phase, placed, gap);
+      if (p !== c.phase) c.phase = p; // untouched ones keep their exact phase
+      placed.push(c.phase);
+    }
+  }
+  return out;
+}
+
+/**
+ * `phase` if it is `gap` clear of every placed phase, else the next clear spot ahead of it. On an
+ * orbit too crowded for that, the middle of the widest space left, so it still never lands on top.
+ */
+function freeSpot(phase, placed, gap) {
+  let p = phase;
+  // Each step jumps just past one blocker, so a clear spot is found within this many steps if any.
+  for (let step = 0; step <= placed.length; step++) {
+    const blocker = placed.find((q) => arc(p, q) < gap - 1e-9);
+    if (blocker === undefined) return p;
+    p = (blocker + gap) % Math.PI;
+  }
+  const sorted = [...placed].sort((x, y) => x - y);
+  let best = 0;
+  let widest = -1;
+  sorted.forEach((q, i) => {
+    const space = i + 1 < sorted.length ? sorted[i + 1] - q : sorted[0] + Math.PI - q;
+    if (space > widest) { widest = space; best = (q + space / 2) % Math.PI; }
+  });
+  return best;
+}
+
+/** Distance between two phases on the circle of length π. */
+function arc(a, b) {
+  const d = Math.abs(a - b) % Math.PI;
+  return Math.min(d, Math.PI - d);
+}
+return { MIN_RADIUS, MAX_RADIUS, radiusForCadence, speedForCadence, sizeForRadius, stablePhase, toOrbitData, MIN_PHASE_GAP, phaseGapFor, separatePhases };
 })();
 
 // ── src/orbit/colors.js ───────────────────────────────────────────────────
@@ -2075,7 +2144,7 @@ const { createRepository, localStorageAdapter, newId } = __modules["src/data/rep
 const { seedDemo } = __modules["src/data/demo.js"];
 const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
-const { toOrbitData } = __modules["src/domain/layout.js"];
+const { separatePhases, toOrbitData } = __modules["src/domain/layout.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
 const { detailSheet, logSheet, confirmDialog } = __modules["src/ui/detailSheet.js"];
@@ -2137,12 +2206,13 @@ function refreshOrbit(contacts = repo.getAll()) {
   // Capture `now` per emission so health states never go stale.
   const now = Date.now();
   const recentSince = now - 30 * 86_400_000;
-  orbit.setContacts(contacts.map((c) => ({
+  orbit.setContacts(separatePhases(contacts.map((c) => ({
     ...toOrbitData({ id: c.id, name: c.name, cadenceDays: c.cadenceDays, healthState: healthOf(c, now) }),
+    createdAt: c.createdAt, // separatePhases keeps older planets in place
     lastEngagedAt: c.lastEngagedAt,
     ratio: ratioOf(c, now),
     moons: repo.getEngagementHistory(c.id).filter((e) => e.loggedAt >= recentSince).length,
-  })), HEALTH_LABELS);
+  }))), HEALTH_LABELS);
 }
 // Re-evaluate periodically so the SA-001 24h grace period lapses on its own.
 setInterval(() => refreshOrbit(), 60_000);
