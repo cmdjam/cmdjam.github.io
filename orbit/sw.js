@@ -2,7 +2,7 @@
 // Bump VERSION whenever a file in ASSETS changes (the deploy workflow does this for you): the
 // browser sees the new sw.js, installs the new set into a fresh cache, and the old cache is
 // deleted on activate. Each version is served whole, so files from different releases never mix.
-const VERSION = 'orbit-134dcb92aa4b';
+const VERSION = 'orbit-da58b77a13bf';
 const ASSETS = [
   './',
   'index.html',

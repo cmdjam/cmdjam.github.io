@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.0.0 (134dcb92aa4b)">
+  <meta name="app-version" content="1.0.0 (da58b77a13bf)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -810,12 +810,14 @@ return { MIN_RADIUS, MAX_RADIUS, radiusForCadence, speedForCadence, sizeForRadiu
 __modules["src/orbit/colors.js"] = (() => {
 // Health palette, ported from the original Flutter app's app_colors.dart. Plain data so the
 // painter stays DOM-free; the same values live as CSS tokens in src/styles.css.
+// glowSpread (halo radius in planet radii) keeps the states apart in greyscale (GS-03),
+// where Drifting's brighter yellow glow would otherwise match Thriving's.
 
 const HEALTH_COLORS = Object.freeze({
-  thriving: { base: '#16A34A', highlight: '#86EFAC', glow: [74, 222, 128], glowOpacity: 0.55 },
-  drifting: { base: '#D97706', highlight: '#FDE68A', glow: [252, 211, 77], glowOpacity: 0.45 },
-  neglected: { base: '#C2410C', highlight: '#FDBA74', glow: [251, 146, 60], glowOpacity: 0.38 },
-  estranged: { base: '#1A1A22', highlight: '#555560', glow: [156, 163, 175], glowOpacity: 0 },
+  thriving: { base: '#16A34A', highlight: '#86EFAC', glow: [74, 222, 128], glowOpacity: 0.55, glowSpread: 2.8 },
+  drifting: { base: '#D97706', highlight: '#FDE68A', glow: [252, 211, 77], glowOpacity: 0.45, glowSpread: 2.0 },
+  neglected: { base: '#C2410C', highlight: '#FDBA74', glow: [251, 146, 60], glowOpacity: 0.38, glowSpread: 1.6 },
+  estranged: { base: '#1A1A22', highlight: '#555560', glow: [156, 163, 175], glowOpacity: 0, glowSpread: 0 },
 });
 
 const TEXT_SECONDARY_RGB = [136, 145, 170]; // #8891AA
@@ -956,7 +958,7 @@ function drawPlanet(ctx, p, style, t, light) {
 
   // Glow — healthy states only, fades in toward the arc peak.
   if (colors.glowOpacity > 0 && depth > 0.3 && style.glow > 0) {
-    const glowR = r * 2.8;
+    const glowR = r * colors.glowSpread;
     const g = ctx.createRadialGradient(px, py, r * 0.6, px, py, glowR);
     g.addColorStop(0, rgba(colors.glow, colors.glowOpacity * depth * 0.7 * style.glow));
     g.addColorStop(1, rgba(colors.glow, 0));
