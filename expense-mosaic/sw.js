@@ -2,7 +2,7 @@
 // Bump VERSION whenever any file in ASSETS changes (the deploy workflow does this for you):
 // the browser sees the new sw.js, installs the new set into a fresh cache, and the old cache is
 // deleted on activate. Each version is served whole, so files from different releases never mix.
-const VERSION = 'expense-mosaic-265338af31fa';
+const VERSION = 'expense-mosaic-ed2aae2fb92b';
 const ASSETS = [
   './',
   'index.html',
