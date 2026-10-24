@@ -3,7 +3,7 @@
 //   #/rule/<id>        one rule: marks, call ladder, log a strike, history
 //   #/edit/<id>        edit a rule;  #/new/<childId>  a new rule for a player
 //   #/players          add, rename, recolour, remove players
-//   #/settings         backup: JSON export and import
+//   #/settings         theme, backup (JSON export and import) and the app version
 import * as R from './rules.js';
 import { load, save, normalize, uid, COLOURS } from './store.js';
 import { h, fmtDate, fmtDateTime, localInputValue, plural, strikeMarks, nextLine, callLadder } from './ui.js';
@@ -21,6 +21,32 @@ function commit() {
 
 const child = id => data.children.find(c => c.id === id);
 const rule = id => data.rules.find(r => r.id === id);
+
+// ---- Theme and version ------------------------------------------------------------------
+
+// 'system' | 'light' | 'dark', kept per device under umpire-theme (not in the data or backups).
+// index.html applies it before first paint; css/app.css keys the dark tokens off data-theme.
+const THEME_KEY = 'umpire-theme';
+const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+const savedTheme = () => { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' ? t : 'system'; } catch { return 'system'; } };
+let theme = savedTheme();
+function applyTheme() {
+  if (theme === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark' || (theme === 'system' && darkMQ.matches);
+  document.querySelector('meta[name="theme-color"]').content = dark ? '#12161D' : '#ECEFF3';
+}
+function setTheme(t) {
+  theme = t;
+  try { if (t === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch { /* private mode: this visit only */ }
+  applyTheme();
+  render();
+}
+applyTheme();
+darkMQ.addEventListener('change', applyTheme);
+
+// "1.2.0 (0123456789ab)": package.json's version and the commit, stamped by the deploy; "dev" locally.
+const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || 'dev';
 
 // ---- Toast and dialogs ------------------------------------------------------------------
 
@@ -374,8 +400,14 @@ function settingsView() {
   const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: e => { const f = e.target.files[0]; if (f) f.text().then(restore); e.target.value = ''; } });
   return h('div', { class: 'stack' },
     h('div', null, h('a', { href: '#/', class: 'small' }, '← Board')),
-    h('h2', null, 'Backup'),
+    h('h2', null, 'Settings'),
     h('section', { class: 'card stack' },
+      h('h2', { id: 'theme-l' }, 'Theme'),
+      h('div', null, h('div', { class: 'seg', role: 'group', 'aria-labelledby': 'theme-l' }, [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']].map(([v, label]) =>
+        h('button', { 'aria-pressed': String(theme === v), onclick: () => setTheme(v) }, label)))),
+    ),
+    h('section', { class: 'card stack' },
+      h('h2', null, 'Backup'),
       h('p', { class: 'small muted', style: { margin: 0 } }, 'Everything is stored in this browser only. Export a backup to keep it safe or move it to another device.'),
       h('div', { class: 'row' }, h('button', { class: 'primary', onclick: download }, 'Download backup'), h('button', { onclick: copy }, 'Copy backup')),
     ),
@@ -384,6 +416,7 @@ function settingsView() {
       area,
       h('div', { class: 'row' }, h('button', { onclick: () => restore(area.value) }, 'Import pasted'), h('button', { onclick: () => file.click() }, 'Import file…'), file),
     ),
+    h('p', { class: 'version muted' }, `Umpire ${APP_VERSION}`),
   );
 }
 
@@ -409,7 +442,7 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 setInterval(() => { if (!dialog.open && document.visibilityState === 'visible') render(); }, 60_000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(); });
 // Another tab saved: pick up its data.
-window.addEventListener('storage', () => { data = load(); render(); });
+window.addEventListener('storage', () => { data = load(); theme = savedTheme(); applyTheme(); render(); });
 render();
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});

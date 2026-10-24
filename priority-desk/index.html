@@ -6,29 +6,58 @@
 <title>Priority Desk</title>
 <meta name="description" content="Eisenhower-matrix task board: sort tasks by urgency and importance." />
 <meta name="theme-color" content="#ECEFF3" />
+<meta name="app-version" content="1.0.0 (265338af31fa)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Priorities" />
+<script>
+  // Apply the saved theme before first paint, so a chosen dark theme doesn't flash light.
+  try { var t = localStorage.getItem("priority-desk-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
 <style>
+  /* Colour tokens: dark mode repeats them under prefers-color-scheme (unless data-theme="light")
+     and under data-theme="dark". The theme button sets data-theme. */
   :root{
+    color-scheme:light;
     --paper:#ECEFF3;
     --panel:#FFFFFF;
     --ink:#1B2430;
+    --ink-inv:#FFFFFF;
     --muted:#5B6675;
     --faint:#8A93A0;
     --hair:#D5DBE2;
     --hair-strong:#C3CAD3;
     --grid:rgba(27,36,48,0.045);
+    --soft:#F7F8FA;
+    --hover:#EEF1F4;
     --q1:#C7452F;   /* do now */
     --q2:#1F6F6B;   /* schedule */
     --q3:#7A5BA6;   /* delegate */
     --q4:#8A93A0;   /* drop */
     --radius:10px;
     --shadow:0 1px 2px rgba(27,36,48,.06), 0 6px 18px rgba(27,36,48,.06);
+    --lift:0 20px 60px rgba(27,36,48,.35);
+    --scrim:rgba(27,36,48,.45);
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --paper:#12161C; --panel:#1A2029; --ink:#E6EAF0; --ink-inv:#12161C; --muted:#A0A9B6; --faint:#848E9C;
+      --hair:#262D37; --hair-strong:#323B47; --grid:rgba(230,234,240,.035); --soft:#212833; --hover:#262D37;
+      --q1:#E06A52; --q2:#3FA59E; --q3:#A88BD6; --q4:#848E9C;
+      --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 18px rgba(0,0,0,.18); --lift:0 20px 60px rgba(0,0,0,.55); --scrim:rgba(0,0,0,.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --paper:#12161C; --panel:#1A2029; --ink:#E6EAF0; --ink-inv:#12161C; --muted:#A0A9B6; --faint:#848E9C;
+    --hair:#262D37; --hair-strong:#323B47; --grid:rgba(230,234,240,.035); --soft:#212833; --hover:#262D37;
+    --q1:#E06A52; --q2:#3FA59E; --q3:#A88BD6; --q4:#848E9C;
+    --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 18px rgba(0,0,0,.18); --lift:0 20px 60px rgba(0,0,0,.55); --scrim:rgba(0,0,0,.55);
   }
   *{box-sizing:border-box;}
   html,body{margin:0;height:100%;}
@@ -61,12 +90,12 @@
   .btn:hover{border-color:var(--ink);}
   .btn:active{transform:translateY(1px);}
   .btn.ghost{background:var(--panel);}
-  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .btn.primary{background:var(--ink);color:var(--ink-inv);border-color:var(--ink);}
   .btn .k{font-family:var(--mono);font-size:14px;}
   .seg{display:inline-flex;border:1px solid var(--hair-strong);border-radius:8px;overflow:hidden;background:var(--panel);}
   .seg label{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:7px 10px;cursor:pointer;color:var(--muted);}
   .seg input{display:none;}
-  .seg input:checked + label{background:var(--ink);color:#fff;}
+  .seg input:checked + label{background:var(--ink);color:var(--ink-inv);}
 
   .viewpick{display:flex;align-items:center;gap:8px;}
   .viewpick select{
@@ -87,7 +116,7 @@
   .count{font-family:var(--mono);font-size:11px;color:var(--faint);border:1px solid var(--hair);border-radius:99px;padding:1px 7px;}
   .addrow{display:flex;gap:8px;margin-bottom:10px;}
   .addrow input[type=text]{
-    flex:1;min-width:0;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;background:#fff;
+    flex:1;min-width:0;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;background:var(--panel);color:var(--ink);
   }
   .addrow input[type=text]:focus{outline:2px solid var(--q2);outline-offset:0;border-color:var(--q2);}
   .tray{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;min-height:46px;scrollbar-width:thin;}
@@ -100,23 +129,23 @@
   .projbar > .label{flex:none;}
   .projhint{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--faint);white-space:nowrap;}
   .chips{display:flex;align-items:center;gap:8px;flex:1;min-width:0;overflow-x:auto;padding:3px;scrollbar-width:thin;}
-  .chip{flex:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hair-strong);background:#fff;border-radius:99px;padding:5px 10px;font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;cursor:pointer;}
-  .chip.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .chip{flex:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hair-strong);background:var(--panel);border-radius:99px;padding:5px 10px;font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;cursor:pointer;}
+  .chip.active{background:var(--ink);color:var(--ink-inv);border-color:var(--ink);}
   .chip .nm{max-width:160px;overflow:hidden;text-overflow:ellipsis;}
   .chip .crank{font-family:var(--mono);font-size:10px;color:var(--faint);}
   .chip .cdot{width:9px;height:9px;border-radius:3px;flex:none;}
   .chip .ccount{font-family:var(--mono);font-size:10px;color:var(--faint);}
-  .chip.active .crank,.chip.active .ccount{color:rgba(255,255,255,.65);}
+  .chip.active .crank,.chip.active .ccount{color:color-mix(in srgb,var(--ink-inv) 65%,transparent);}
   .chip .grip{color:var(--hair-strong);}
-  .chip.active .grip{color:rgba(255,255,255,.5);}
+  .chip.active .grip{color:color-mix(in srgb,var(--ink-inv) 50%,transparent);}
   .chip .icbtn{width:20px;height:20px;}
-  .chip.active .icbtn{color:rgba(255,255,255,.7);}
-  .chip.active .icbtn:hover{background:rgba(255,255,255,.16);color:#fff;}
+  .chip.active .icbtn{color:color-mix(in srgb,var(--ink-inv) 70%,transparent);}
+  .chip.active .icbtn:hover{background:color-mix(in srgb,var(--ink-inv) 16%,transparent);color:var(--ink-inv);}
   .addchip{font-family:var(--mono);font-size:15px;line-height:1;padding:5px 11px;color:var(--muted);}
   .addchip:hover{border-color:var(--ink);color:var(--ink);}
   .proj-tools{display:flex;gap:2px;}
   .icbtn{appearance:none;border:none;background:transparent;cursor:pointer;color:var(--faint);font-size:13px;line-height:1;padding:3px;border-radius:5px;width:22px;height:22px;}
-  .icbtn:hover{background:#eef1f4;color:var(--ink);}
+  .icbtn:hover{background:var(--hover);color:var(--ink);}
 
   /* ---------- matrix ---------- */
   .matrix{
@@ -142,7 +171,7 @@
 
   /* ---------- cards ---------- */
   .card{
-    background:#fff;border:1px solid var(--hair-strong);border-radius:8px;padding:8px 9px;
+    background:var(--panel);border:1px solid var(--hair-strong);border-radius:8px;padding:8px 9px;
     display:flex;align-items:flex-start;gap:7px;position:relative;
   }
   .tray .card{min-width:200px;}
@@ -151,7 +180,7 @@
   .grip svg{width:10px;height:16px;display:block;fill:currentColor;}
   .card.dragging,.proj.dragging{opacity:.35;}
   .card.dragging .grip,.proj.dragging .grip{cursor:grabbing;}
-  .card .chk{flex:none;width:18px;height:18px;margin-top:1px;border:1.5px solid var(--hair-strong);border-radius:5px;cursor:pointer;display:grid;place-items:center;background:#fff;}
+  .card .chk{flex:none;width:18px;height:18px;margin-top:1px;border:1.5px solid var(--hair-strong);border-radius:5px;cursor:pointer;display:grid;place-items:center;background:var(--panel);color:var(--ink-inv);}
   .card .chk:hover{border-color:var(--ink);}
   .card.done .chk{background:var(--ink);border-color:var(--ink);}
   .card .chk svg{width:11px;height:11px;display:none;}
@@ -162,16 +191,16 @@
   .card .meta{display:flex;align-items:center;gap:6px;margin-top:6px;}
   .card .psel{
     -webkit-appearance:none;appearance:none;border:1px solid var(--hair);border-radius:99px;
-    font-family:var(--mono);font-size:10px;padding:2px 8px;background:#f7f8fa;color:var(--muted);cursor:pointer;max-width:130px;
+    font-family:var(--mono);font-size:10px;padding:2px 8px;background:var(--soft);color:var(--muted);cursor:pointer;max-width:130px;
   }
   .card .pdot{width:8px;height:8px;border-radius:2px;flex:none;}
   .card .del{margin-left:auto;}
-  .card .titleinput{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--q2);border-radius:5px;padding:3px 5px;}
+  .card .titleinput{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--q2);border-radius:5px;padding:3px 5px;background:var(--panel);color:var(--ink);}
 
   /* drop highlight */
-  .dropok{outline:2px dashed var(--zc,var(--q2));outline-offset:-4px;background:rgba(31,111,107,.04);}
-  .zone.dropok{background:color-mix(in srgb,var(--zc) 7%,#fff);}
-  .inbox.dropok{background:#f3f7f7;}
+  .dropok{outline:2px dashed var(--zc,var(--q2));outline-offset:-4px;background:color-mix(in srgb,var(--q2) 4%,transparent);}
+  .zone.dropok{background:color-mix(in srgb,var(--zc) 7%,var(--panel));}
+  .inbox.dropok{background:color-mix(in srgb,var(--q2) 5%,var(--panel));}
 
   /* drag preview */
   .drag-ghost{position:fixed;z-index:9999;pointer-events:none;box-shadow:0 10px 30px rgba(27,36,48,.25);transform:rotate(-1.5deg);opacity:.96;}
@@ -180,16 +209,17 @@
   .help summary{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);cursor:pointer;}
   .help p{margin:8px 0 0;max-width:70ch;}
   .help b{color:var(--ink);}
+  .ver{margin-top:14px;font-family:var(--mono);font-size:11px;color:var(--faint);}
 
-  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:10000;}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:var(--ink-inv);padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:10000;}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
 
-  .modal{position:fixed;inset:0;background:rgba(27,36,48,.45);display:flex;align-items:center;justify-content:center;z-index:10001;padding:18px;}
+  .modal{position:fixed;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:10001;padding:18px;}
   .modal[hidden]{display:none;}
-  .modal-card{background:#fff;border:1px solid var(--hair);border-radius:12px;box-shadow:0 20px 60px rgba(27,36,48,.35);width:min(440px,100%);padding:18px;}
+  .modal-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--lift);width:min(440px,100%);padding:18px;}
   .modal-title{font-weight:800;font-size:16px;margin-bottom:8px;}
   .modal-body{font-size:13.5px;color:var(--muted);}
-  .modal-body input[type=text],.modal-body textarea{width:100%;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;margin-top:10px;color:var(--ink);}
+  .modal-body input[type=text],.modal-body textarea{width:100%;border:1px solid var(--hair-strong);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;margin-top:10px;color:var(--ink);background:var(--panel);}
   .modal-body textarea{min-height:150px;font-family:var(--mono);font-size:12px;line-height:1.45;resize:vertical;}
   .modal-body input[type=text]:focus,.modal-body textarea:focus{outline:2px solid var(--q2);outline-offset:0;border-color:var(--q2);}
   .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
@@ -216,6 +246,7 @@
       </div>
       <button class="btn ghost" id="exportBtn"><span class="k">&darr;</span> Export</button>
       <button class="btn ghost" id="importBtn"><span class="k">&uarr;</span> Import</button>
+      <button class="btn ghost" id="themeBtn" title="Theme: follow the system, light or dark"></button>
       <input type="file" id="importFile" accept="application/json,.json" hidden>
     </div>
   </header>
@@ -273,7 +304,9 @@
     <p>Drop thoughts into the <b>Inbox</b> as they arrive. When you have a moment, drag each one into a matrix quadrant and pick its project. Tap a task's title to rename it, the box to mark it done.</p>
     <p>Tap a <b>project</b> chip to filter the matrix to just that project; tap it again, or <b>All</b>, to see everything. Drag the chips left and right to set priority — leftmost ranks highest, and in the all-projects view each quadrant is ordered by that ranking.</p>
     <p><b>Export</b> writes your whole desk to JSON; <b>Import</b> loads one back, for moving between devices. Everything auto-saves in this browser as you go.</p>
+    <p>The <b>theme</b> button switches between following your system's setting, light and dark.</p>
   </details>
+  <p class="ver" id="appVersion"></p>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -366,7 +399,7 @@
   var inboxList = document.getElementById("inboxList");
   var projChipsEl = document.getElementById("projChips");
 
-  function checkSVG(){ return '<svg viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5l2.5 2.5 4.5-5.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'; }
+  function checkSVG(){ return '<svg viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5l2.5 2.5 4.5-5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'; }
   function gripSVG(){ return '<svg viewBox="0 0 6 16"><circle cx="1.5" cy="3" r="1"/><circle cx="4.5" cy="3" r="1"/><circle cx="1.5" cy="8" r="1"/><circle cx="4.5" cy="8" r="1"/><circle cx="1.5" cy="13" r="1"/><circle cx="4.5" cy="13" r="1"/></svg>'; }
   function pencilSVG(){ return '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>'; }
 
@@ -659,6 +692,32 @@
     r.readAsText(f);
     e.target.value="";
   });
+
+  // ---------- theme and version ----------
+  // "system" | "light" | "dark", kept per device under priority-desk-theme (not in exports). The
+  // inline script in <head> applies it before first paint; the CSS keys dark tokens off data-theme.
+  var THEME_KEY="priority-desk-theme", THEMES={system:"Theme: System",light:"Theme: Light",dark:"Theme: Dark"};
+  var darkMQ=window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
+  var theme="system";
+  try{ var savedTheme=localStorage.getItem(THEME_KEY); if(savedTheme==="light"||savedTheme==="dark") theme=savedTheme; }catch(e){}
+  var themeBtn=document.getElementById("themeBtn");
+  function applyTheme(){
+    if(theme==="system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    var dark = theme==="dark" || (theme==="system" && !!darkMQ && darkMQ.matches);
+    document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#12161C" : "#ECEFF3");
+    themeBtn.textContent=THEMES[theme];
+    themeBtn.setAttribute("aria-label",THEMES[theme]+". Change theme");
+  }
+  themeBtn.addEventListener("click", function(){
+    theme = theme==="system" ? "light" : theme==="light" ? "dark" : "system";
+    try{ if(theme==="system") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, theme); }catch(e){}
+    applyTheme();
+  });
+  if(darkMQ && darkMQ.addEventListener) darkMQ.addEventListener("change", applyTheme);
+  applyTheme();
+  // "1.2.0 (0123456789ab)": package.json's version and the commit, stamped by the deploy; "dev" locally.
+  document.getElementById("appVersion").textContent="Priority Desk "+(document.querySelector('meta[name="app-version"]').getAttribute("content")||"dev");
 
   var toastEl=document.getElementById("toast"); var toastTimer;
   function toast(msg){ toastEl.textContent=msg; toastEl.classList.add("show"); clearTimeout(toastTimer); toastTimer=setTimeout(function(){toastEl.classList.remove("show");},2200); }

@@ -6,16 +6,26 @@
 <title>Expense Mosaic</title>
 <meta name="description" content="Collect receipts into a mosaic you can annotate, total and print." />
 <meta name="theme-color" content="#ECEFF3" />
+<meta name="app-version" content="1.0.0 (265338af31fa)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Expenses" />
+<script>
+  // Apply the saved theme before first paint, so a chosen dark theme doesn't flash light.
+  try { var t = localStorage.getItem("expense-mosaic-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
 <style>
+  /* Colour tokens: dark mode repeats them under prefers-color-scheme (unless data-theme="light")
+     and under data-theme="dark", on screen only, so printing always uses the light ones. The theme
+     button sets data-theme. */
   :root{
+    color-scheme:light;
     --paper:#ECEFF3;
     --panel:#FFFFFF;
     --ink:#1B2430;
+    --ink-inv:#FFFFFF;
     --muted:#5B6675;
     --faint:#8A93A0;
     --hair:#D5DBE2;
@@ -23,12 +33,33 @@
     --grid:rgba(27,36,48,0.045);
     --accent:#1F6F6B;
     --danger:#C7452F;
+    --photo:#F5F6F8;
+    --veil:rgba(255,255,255,.94);
     --radius:10px;
     --shadow:0 1px 2px rgba(27,36,48,.06), 0 6px 18px rgba(27,36,48,.06);
+    --shadow-hover:0 1px 2px rgba(27,36,48,.08),0 10px 24px rgba(27,36,48,.10);
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     --tile:220px;
     --pcols:3;
+  }
+  @media screen and (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --paper:#12161C; --panel:#1A2029; --ink:#E6EAF0; --ink-inv:#12161C; --muted:#A0A9B6; --faint:#848E9C;
+      --hair:#262D37; --hair-strong:#323B47; --grid:rgba(230,234,240,.035);
+      --accent:#3FA59E; --danger:#E06A52; --photo:#232A35; --veil:rgba(26,32,41,.94);
+      --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 18px rgba(0,0,0,.18); --shadow-hover:0 1px 2px rgba(0,0,0,.3),0 10px 24px rgba(0,0,0,.3);
+    }
+  }
+  @media screen{
+    :root[data-theme="dark"]{
+      color-scheme:dark;
+      --paper:#12161C; --panel:#1A2029; --ink:#E6EAF0; --ink-inv:#12161C; --muted:#A0A9B6; --faint:#848E9C;
+      --hair:#262D37; --hair-strong:#323B47; --grid:rgba(230,234,240,.035);
+      --accent:#3FA59E; --danger:#E06A52; --photo:#232A35; --veil:rgba(26,32,41,.94);
+      --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 18px rgba(0,0,0,.18); --shadow-hover:0 1px 2px rgba(0,0,0,.3),0 10px 24px rgba(0,0,0,.3);
+    }
   }
   *{box-sizing:border-box;}
   html,body{margin:0;min-height:100%;}
@@ -62,7 +93,7 @@
   }
   .btn:hover{border-color:var(--ink);}
   .btn:active{transform:translateY(1px);}
-  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .btn.primary{background:var(--ink);color:var(--ink-inv);border-color:var(--ink);}
   .btn.danger{color:var(--danger);}
   .btn.danger:hover{border-color:var(--danger);}
   .btn .k{font-family:var(--mono);font-size:14px;}
@@ -103,17 +134,17 @@
     margin-bottom:14px;background:var(--panel);border:1px solid var(--hair);border-radius:var(--radius);
     box-shadow:var(--shadow);overflow:hidden;cursor:zoom-in;transition:border-color .15s,box-shadow .15s;
   }
-  .tile:hover .inner{border-color:var(--hair-strong);box-shadow:0 1px 2px rgba(27,36,48,.08),0 10px 24px rgba(27,36,48,.10);}
-  .tile .ph{background:#F5F6F8;display:block;width:100%;}
+  .tile:hover .inner{border-color:var(--hair-strong);box-shadow:var(--shadow-hover);}
+  .tile .ph{background:var(--photo);display:block;width:100%;}
   .tile .ph img{display:block;width:100%;height:100%;object-fit:contain;-webkit-user-drag:none;}
   .tile .num{
     position:absolute;top:8px;left:8px;font-family:var(--mono);font-size:11px;font-weight:700;
-    background:var(--ink);color:#fff;border-radius:99px;padding:2px 7px;pointer-events:none;
+    background:var(--ink);color:var(--ink-inv);border-radius:99px;padding:2px 7px;pointer-events:none;
   }
   .tile .tools{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s;}
   .tile:hover .tools,.tile:focus-within .tools{opacity:1;}
   .tile .tools button,.tile .grip{
-    appearance:none;border:1px solid var(--hair-strong);background:rgba(255,255,255,.94);border-radius:7px;
+    appearance:none;border:1px solid var(--hair-strong);background:var(--veil);border-radius:7px;
     width:28px;height:28px;display:grid;place-items:center;font-size:13px;cursor:pointer;padding:0;
   }
   .tile .tools button:hover{border-color:var(--ink);}
@@ -139,7 +170,7 @@
 
   /* ---------- empty / drop ---------- */
   .empty{
-    border:2px dashed var(--hair-strong);border-radius:14px;background:rgba(255,255,255,.6);
+    border:2px dashed var(--hair-strong);border-radius:14px;background:color-mix(in srgb,var(--panel) 60%,transparent);
     padding:clamp(28px,7vw,64px) 20px;text-align:center;color:var(--muted);cursor:pointer;
   }
   .empty:hover{border-color:var(--ink);}
@@ -148,7 +179,7 @@
   .kbd{font-family:var(--mono);font-size:12px;border:1px solid var(--hair-strong);border-bottom-width:2px;border-radius:5px;padding:1px 5px;background:var(--panel);}
   .dropzone{
     position:fixed;inset:10px;z-index:80;border:3px dashed var(--accent);border-radius:16px;
-    background:rgba(236,239,243,.88);display:grid;place-items:center;pointer-events:none;
+    background:color-mix(in srgb,var(--paper) 88%,transparent);display:grid;place-items:center;pointer-events:none;
     font-size:22px;font-weight:800;color:var(--accent);
   }
   .hint{font-size:12px;color:var(--faint);margin-top:14px;}
@@ -164,7 +195,7 @@
   .x{appearance:none;border:0;background:none;font-size:20px;line-height:1;cursor:pointer;color:var(--muted);padding:4px 6px;}
   .field{display:flex;flex-direction:column;gap:4px;}
   .field input,.field select,.field textarea{
-    border:1px solid var(--hair-strong);border-radius:8px;padding:8px 10px;font-size:14px;background:#fff;width:100%;
+    border:1px solid var(--hair-strong);border-radius:8px;padding:8px 10px;font-size:14px;background:var(--panel);width:100%;
   }
   .field textarea{resize:vertical;min-height:64px;}
   .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent);}
@@ -199,7 +230,7 @@
   /* toast */
   .toast{
     position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:90;
-    background:var(--ink);color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;
+    background:var(--ink);color:var(--ink-inv);padding:10px 14px;border-radius:8px;font-size:13px;
     box-shadow:0 10px 30px rgba(0,0,0,.25);max-width:calc(100vw - 32px);
   }
   .toast.err{background:var(--danger);}
@@ -251,6 +282,7 @@
     <div class="actions">
       <select class="pick" id="batchSel" aria-label="Switch batch"></select>
       <button class="btn" id="batchEditBtn" title="Rename, currency, notes, delete">Batch settings</button>
+      <button class="btn" id="themeBtn" title="Theme: follow the system, light or dark"></button>
       <button class="btn primary" id="addBtn"><span class="k">+</span> Add receipts</button>
       <input type="file" id="fileIn" accept="image/*,application/pdf,.pdf" multiple hidden />
     </div>
@@ -283,6 +315,7 @@
   <footer class="foot">
     <span>Everything is stored in this browser only (IndexedDB). Use Export to back up or move a batch.</span>
     <span id="usage"></span>
+    <span id="appVersion"></span>
   </footer>
 </div>
 
@@ -1135,6 +1168,31 @@
   else window.addEventListener("resize", layout);
 
   // ---------- adding: picker, drop, paste ----------
+  // ---------- theme and version ----------
+  // "system" | "light" | "dark", kept per device under expense-mosaic-theme (not in exports). The
+  // inline script in <head> applies it before first paint; the CSS keys dark tokens off data-theme.
+  var THEME_KEY = "expense-mosaic-theme", THEMES = { system:"Theme: System", light:"Theme: Light", dark:"Theme: Dark" };
+  var darkMQ = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
+  var theme = "system";
+  try { var savedTheme = localStorage.getItem(THEME_KEY); if (savedTheme === "light" || savedTheme === "dark") theme = savedTheme; } catch (e) {}
+  function applyTheme(){
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    var dark = theme === "dark" || (theme === "system" && !!darkMQ && darkMQ.matches);
+    $('meta[name="theme-color"]').setAttribute("content", dark ? "#12161C" : "#ECEFF3");
+    $("#themeBtn").textContent = THEMES[theme];
+    $("#themeBtn").setAttribute("aria-label", THEMES[theme] + ". Change theme");
+  }
+  $("#themeBtn").addEventListener("click", function(){
+    theme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+    try { if (theme === "system") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+    applyTheme();
+  });
+  if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener("change", applyTheme);
+  applyTheme();
+  // "1.2.0 (0123456789ab)": package.json's version and the commit, stamped by the deploy; "dev" locally.
+  $("#appVersion").textContent = "Expense Mosaic " + ($('meta[name="app-version"]').getAttribute("content") || "dev");
+
   $("#addBtn").addEventListener("click", function(){ $("#fileIn").click(); });
   $("#empty").addEventListener("click", function(){ $("#fileIn").click(); });
   $("#fileIn").addEventListener("change", function(e){ addFiles(e.target.files); e.target.value = ""; });

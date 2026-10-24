@@ -6,12 +6,17 @@
 <title>Tessera Day</title>
 <meta name="description" content="Time tracking as a mosaic: paint your day in coloured tiles." />
 <meta name="theme-color" content="#ECEFF3" />
+<meta name="app-version" content="1.0.0 (265338af31fa)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-title" content="Tessera" />
 <link rel="stylesheet" href="css/app.css" />
+<script>
+  // Apply the saved theme before first paint, so a chosen dark theme doesn't flash light.
+  try { var t = localStorage.getItem('tessera-day-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 </head>
 <body>
 <div class="wrap">

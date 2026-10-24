@@ -56,6 +56,8 @@ const VIEWS = {
   },
 };
 const UI_KEY = 'tessera-day-ui-v1';
+// The theme setting is mirrored here so index.html can apply it before the data loads.
+const THEME_KEY = 'tessera-day-theme';
 const darkMQ = matchMedia('(prefers-color-scheme: dark)');
 
 export const app = {
@@ -217,6 +219,7 @@ export const app = {
   render() {
     const { ui } = this;
     document.documentElement.dataset.theme = this.settings.theme === 'auto' ? '' : this.settings.theme;
+    try { if (localStorage.getItem(THEME_KEY) !== this.settings.theme) localStorage.setItem(THEME_KEY, this.settings.theme); } catch { /* private mode */ }
     this.refreshColors();
     $('meta[name="theme-color"]').content = this.dark ? '#12161C' : '#ECEFF3';
     // The restore brush paints the plan back onto actuals, or the baseline onto a plan being changed.

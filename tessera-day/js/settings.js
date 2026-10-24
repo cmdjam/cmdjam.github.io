@@ -1,9 +1,11 @@
-// Settings dialog: tessera length, week start, theme, and data export / import / erase.
+// Settings dialog: tessera length, week start, theme, data export / import / erase, and the version.
 import * as M from './model.js';
 import * as store from './store.js';
 import { $, esc, ask, toast } from './ui.js';
 
 let bound = false;
+// "1.2.0 (0123456789ab)": package.json's version and the commit, stamped by the deploy; "dev" locally.
+const VERSION = document.querySelector('meta[name="app-version"]')?.content || 'dev';
 
 export function openSettings(app) {
   const dlg = $('#settingsDialog');
@@ -38,6 +40,7 @@ function draw(app, dlg) {
       <input type="file" accept="application/json,.json" hidden>
     </div>
     <div class="row"><button type="button" class="btn danger" data-erase>Erase all data</button></div>
+    <p class="hint version">Tessera Day ${esc(VERSION)}</p>
     <div class="modal-actions"><button class="btn primary" value="done">Done</button></div>
   </form>`;
 }
