@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.0.1 (a87f523a0c81)">
+  <meta name="app-version" content="1.1.0 (b577cf6b775f)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -512,6 +512,70 @@ const KEY = 'orbit.v1';
 
 const emptyState = () => ({ contacts: [], engagements: [] });
 
+// Backup file format. Bump BACKUP_SCHEMA (and teach parseBackup the old one)
+// whenever the stored shape changes.
+const BACKUP_APP = 'orbit';
+const BACKUP_SCHEMA = 1;
+
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const isStr = (v) => typeof v === 'string' && v.length > 0;
+const optStr = (v) => (typeof v === 'string' && v.trim() ? v : null);
+
+/**
+ * Checks a backup (JSON text or an already-parsed object) and returns clean
+ * copies of its contacts and engagements. Throws an Error with a short,
+ * user-facing message when the file is not a usable Orbit backup. Nothing is
+ * written, so an import can check the whole file before touching any data.
+ */
+function parseBackup(input) {
+  let data = input;
+  if (typeof input === 'string') {
+    try { data = JSON.parse(input); } catch { throw new Error('The file is not valid JSON.'); }
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('The file is not an Orbit backup.');
+  if (data.app !== BACKUP_APP) throw new Error('The file is not an Orbit backup.');
+  if (!isNum(data.schema) || data.schema > BACKUP_SCHEMA || data.schema < 1) {
+    throw new Error(`Unsupported backup version (${String(data.schema)}). Update Orbit and try again.`);
+  }
+  if (!Array.isArray(data.contacts) || !Array.isArray(data.engagements)) {
+    throw new Error('The backup is missing its contacts or engagements.');
+  }
+
+  const ids = new Set();
+  const contacts = data.contacts.map((c, i) => {
+    const where = `Contact ${i + 1}`;
+    if (!c || typeof c !== 'object') throw new Error(`${where} is not a record.`);
+    if (!isStr(c.id)) throw new Error(`${where} has no id.`);
+    if (ids.has(c.id)) throw new Error(`${where} repeats the id ${c.id}.`);
+    if (typeof c.name !== 'string' || !c.name.trim()) throw new Error(`${where} has no name.`);
+    if (!isNum(c.cadenceDays) || c.cadenceDays <= 0) throw new Error(`${where} (${c.name}) has an invalid cadence.`);
+    if (!isNum(c.createdAt)) throw new Error(`${where} (${c.name}) has no creation date.`);
+    if (c.lastEngagedAt != null && !isNum(c.lastEngagedAt)) {
+      throw new Error(`${where} (${c.name}) has an invalid last-contact date.`);
+    }
+    ids.add(c.id);
+    return {
+      id: c.id, name: c.name, cadenceDays: c.cadenceDays, createdAt: c.createdAt,
+      lastEngagedAt: c.lastEngagedAt ?? null, note: optStr(c.note),
+    };
+  });
+
+  const engagementIds = new Set();
+  const engagements = data.engagements.map((e, i) => {
+    const where = `Engagement ${i + 1}`;
+    if (!e || typeof e !== 'object') throw new Error(`${where} is not a record.`);
+    if (!isStr(e.id)) throw new Error(`${where} has no id.`);
+    if (engagementIds.has(e.id)) throw new Error(`${where} repeats the id ${e.id}.`);
+    if (!ids.has(e.contactId)) throw new Error(`${where} belongs to a contact that is not in the file.`);
+    if (!isStr(e.type)) throw new Error(`${where} has no type.`);
+    if (!isNum(e.loggedAt)) throw new Error(`${where} has no date.`);
+    engagementIds.add(e.id);
+    return { id: e.id, contactId: e.contactId, type: e.type, loggedAt: e.loggedAt };
+  });
+
+  return { contacts, engagements };
+}
+
 /** In-memory adapter — used by tests and as a fallback when storage throws. */
 function memoryStorage() {
   let value = null;
@@ -605,6 +669,59 @@ function createRepository(storage = memoryStorage()) {
         .map((e) => ({ ...e }));
     },
 
+    /** A backup of everything, as a plain object ready for JSON.stringify. */
+    exportData(now = Date.now()) {
+      return {
+        app: BACKUP_APP,
+        schema: BACKUP_SCHEMA,
+        exportedAt: now,
+        contacts: state.contacts.map((c) => ({ ...c })),
+        engagements: state.engagements.map((e) => ({ ...e })),
+      };
+    },
+
+    /**
+     * Imports a backup (JSON text or object) in one write. The whole file is
+     * checked first (see parseBackup), so a bad file changes nothing.
+     * - 'replace': the backup becomes the whole data set.
+     * - 'merge': records are matched by id. A contact in the backup replaces
+     *   the local one with the same id; its last-contact date keeps the later
+     *   of the two. Engagements are added unless their id already exists.
+     * Returns counts for a confirmation message.
+     */
+    importData(input, { mode = 'merge' } = {}) {
+      if (mode !== 'merge' && mode !== 'replace') throw new Error(`Unknown import mode ${mode}`);
+      const backup = parseBackup(input);
+      if (mode === 'replace') {
+        state = backup;
+      } else {
+        const local = new Map(state.contacts.map((c) => [c.id, c]));
+        const incoming = new Map(backup.contacts.map((c) => [c.id, c]));
+        const contacts = [
+          ...state.contacts.map((c) => {
+            const b = incoming.get(c.id);
+            if (!b) return c;
+            const last = [c.lastEngagedAt, b.lastEngagedAt].filter((v) => v != null);
+            return { ...b, lastEngagedAt: last.length ? Math.max(...last) : null };
+          }),
+          ...backup.contacts.filter((c) => !local.has(c.id)),
+        ];
+        const seen = new Set(state.engagements.map((e) => e.id));
+        const added = backup.engagements.filter((e) => !seen.has(e.id));
+        // Keep lastEngagedAt at least as late as the newest engagement.
+        const newest = new Map();
+        for (const e of added) newest.set(e.contactId, Math.max(newest.get(e.contactId) ?? -Infinity, e.loggedAt));
+        state = {
+          contacts: contacts.map((c) => (newest.has(c.id)
+            ? { ...c, lastEngagedAt: Math.max(c.lastEngagedAt ?? -Infinity, newest.get(c.id)) }
+            : c)),
+          engagements: [...state.engagements, ...added],
+        };
+      }
+      commit();
+      return { contacts: backup.contacts.length, engagements: backup.engagements.length };
+    },
+
     /** Prototype-only: wipe everything. */
     reset() {
       state = emptyState();
@@ -612,7 +729,7 @@ function createRepository(storage = memoryStorage()) {
     },
   };
 }
-return { memoryStorage, localStorageAdapter, newId, createRepository };
+return { BACKUP_APP, BACKUP_SCHEMA, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
 })();
 
 // ── src/data/demo.js ──────────────────────────────────────────────────────
@@ -1907,7 +2024,24 @@ function confirmDialog({ title, body, confirm, onConfirm, onCancel }) {
         h('button', { class: 'text-button', onclick: onCancel }, 'Cancel'),
         h('button', { class: 'text-button danger', onclick: onConfirm }, confirm))));
 }
-return { detailSheet, logSheet, confirmDialog };
+
+/** Asks how to apply a checked backup: merge into, or replace, what's here. */
+function importDialog({ contacts, engagements, onMerge, onReplace, onCancel }) {
+  const people = `${contacts} ${contacts === 1 ? 'person' : 'people'}`;
+  const history = `${engagements} ${engagements === 1 ? 'engagement' : 'engagements'}`;
+  return h('div', { class: 'dialog-layer' },
+    h('div', { class: 'backdrop', onclick: onCancel }),
+    h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Import backup' },
+      h('h3', { class: 'sheet-title' }, 'Import backup'),
+      h('p', { class: 'body-secondary' },
+        `The file holds ${people} and ${history}. Merge adds them to what is here, updating people with the same id. `
+        + 'Replace erases what is here first.'),
+      h('div', { class: 'dialog-actions' },
+        h('button', { class: 'text-button', onclick: onCancel }, 'Cancel'),
+        h('button', { class: 'text-button danger', onclick: onReplace }, 'Replace'),
+        h('button', { class: 'text-button', onclick: onMerge }, 'Merge'))));
+}
+return { detailSheet, logSheet, confirmDialog, importDialog };
 })();
 
 // ── src/ui/screens.js ─────────────────────────────────────────────────────
@@ -2102,7 +2236,14 @@ function historyScreen({ entries, names, now, onOpen, onNav }) {
     bottomNav('history', onNav));
 }
 
-function settingsScreen({ onBack, onSeedDemo, onReset, onReplayOnboarding, specGeometry, onToggleSpec }) {
+function settingsScreen({
+  onBack, onSeedDemo, onReset, onReplayOnboarding, specGeometry, onToggleSpec, onExport, onImport,
+}) {
+  // A hidden picker behind a normal button keeps the row keyboard-friendly.
+  const picker = h('input', {
+    type: 'file', accept: 'application/json,.json', hidden: true, 'aria-hidden': 'true', tabindex: '-1',
+    onchange: (e) => { const file = e.target.files?.[0]; e.target.value = ''; if (file) onImport(file); },
+  });
   return h('section', { class: 'page' },
     h('header', { class: 'page-header' },
       h('button', { class: 'text-button with-icon', onclick: onBack }, icon('back', { size: 18 }), 'Back'),
@@ -2110,7 +2251,7 @@ function settingsScreen({ onBack, onSeedDemo, onReset, onReplayOnboarding, specG
       h('span', { class: 'spacer' })),
     h('div', { class: 'page-scroll' },
       h('p', { class: 'body-dim' },
-        'Prototype build. Data lives only in this browser (localStorage).'),
+        'Prototype build. Data lives only in this browser (localStorage), so export a backup now and then.'),
       h('div', { class: 'settings-list' },
         h('label', { class: 'settings-row' },
           h('span', { class: 'person-text' },
@@ -2118,6 +2259,15 @@ function settingsScreen({ onBack, onSeedDemo, onReset, onReplayOnboarding, specG
             h('span', { class: 'person-sub' }, 'Draw orbits at the exact design-spec size (radii 40–130px)')),
           h('input', { type: 'checkbox', class: 'switch', checked: specGeometry,
             onchange: (e) => onToggleSpec(e.target.checked) })),
+        h('button', { class: 'settings-row', onclick: onExport },
+          h('span', { class: 'person-text' },
+            h('span', {}, 'Export backup'),
+            h('span', { class: 'person-sub' }, 'Download your people and history as a JSON file'))),
+        h('button', { class: 'settings-row', onclick: () => picker.click() },
+          h('span', { class: 'person-text' },
+            h('span', {}, 'Import backup'),
+            h('span', { class: 'person-sub' }, 'Restore from an Orbit backup file'))),
+        picker,
         h('button', { class: 'settings-row', onclick: onSeedDemo }, 'Add demo people'),
         h('button', { class: 'settings-row', onclick: onReplayOnboarding }, 'Replay intro'),
         h('button', { class: 'settings-row danger', onclick: onReset }, 'Erase all data')),
@@ -2140,14 +2290,14 @@ __modules["src/main.js"] = (() => {
 //   #/add         add contact
 //   #/contact/:id orbit canvas with the detail sheet open (deep link)
 //   #/list, #/history, #/settings  (Sprint 2 surfaces, prototyped here)
-const { createRepository, localStorageAdapter, newId } = __modules["src/data/repository.js"];
+const { createRepository, localStorageAdapter, newId, parseBackup } = __modules["src/data/repository.js"];
 const { seedDemo } = __modules["src/data/demo.js"];
 const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
 const { separatePhases, toOrbitData } = __modules["src/domain/layout.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
-const { detailSheet, logSheet, confirmDialog } = __modules["src/ui/detailSheet.js"];
+const { detailSheet, logSheet, confirmDialog, importDialog } = __modules["src/ui/detailSheet.js"];
 const { onboardingScreen, addContactScreen, listScreen, historyScreen, settingsScreen } = __modules["src/ui/screens.js"];
 const { h } = __modules["src/ui/dom.js"];
 
@@ -2227,7 +2377,8 @@ function parseRoute() {
 }
 
 let animateSheet = true;
-let overlay = null; // transient modal state inside a contact route: 'log' | 'delete'
+let overlay = null; // transient modal state: 'log' | 'delete' (contact route), 'import' (settings)
+let pendingImport = null; // a checked backup waiting for Merge/Replace
 
 function render() {
   const route = parseRoute();
@@ -2288,6 +2439,14 @@ function renderPage(route, now) {
           if (confirm('Erase all people and history from this browser?')) { repo.reset(); go('/'); }
         },
         onReplayOnboarding: () => { pref.del(ONBOARDING_KEY); go('/onboarding'); },
+        onExport: exportBackup,
+        onImport: (file) => file.text().then((text) => {
+          let backup;
+          try { backup = parseBackup(text); } catch (e) { toast(`Import failed: ${e.message}`); return; }
+          pendingImport = { text, contacts: backup.contacts.length, engagements: backup.engagements.length };
+          overlay = 'import';
+          render();
+        }, () => toast('Import failed: the file could not be read.')),
         specGeometry: pref.get(SPEC_GEOMETRY_KEY) === '1',
         onToggleSpec: (on) => {
           if (on) pref.set(SPEC_GEOMETRY_KEY, '1'); else pref.del(SPEC_GEOMETRY_KEY);
@@ -2299,8 +2458,35 @@ function renderPage(route, now) {
   }
 }
 
+function exportBackup() {
+  const now = Date.now();
+  const json = JSON.stringify(repo.exportData(now), null, 2);
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const a = h('a', { href: url, download: `orbit-backup-${new Date(now).toISOString().slice(0, 10)}.json` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Backup downloaded');
+}
+
 function renderOverlays(route, now) {
-  if (route.name !== 'contact') { overlay = null; return []; }
+  if (route.name === 'settings' && overlay === 'import' && pendingImport) {
+    const close = () => { overlay = null; pendingImport = null; render(); };
+    const apply = (mode) => {
+      const { text } = pendingImport;
+      overlay = null; pendingImport = null;
+      try {
+        const n = repo.importData(text, { mode });
+        toast(`Imported ${n.contacts} ${n.contacts === 1 ? 'person' : 'people'}`);
+      } catch (e) { toast(`Import failed: ${e.message}`); render(); }
+    };
+    return [importDialog({
+      contacts: pendingImport.contacts, engagements: pendingImport.engagements,
+      onCancel: close, onMerge: () => apply('merge'), onReplace: () => apply('replace'),
+    })];
+  }
+  if (route.name !== 'contact') { overlay = null; pendingImport = null; return []; }
   const contact = repo.getById(route.id);
   const close = () => { overlay = null; go('/'); };
   const detail = contact && {
