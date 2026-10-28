@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.1.0 (b577cf6b775f)">
+  <meta name="app-version" content="1.2.0 (15804ed1bffc)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -414,6 +414,7 @@ h1, h2, h3, p { margin: 0; }
 
 .hero { display: flex; align-items: center; gap: 16px; }
 .hero-name { font: 400 26px/1.15 var(--serif); margin-bottom: 6px; }
+.hero-edit { margin-left: auto; align-self: flex-start; flex: none; }
 
 .rhythm { padding: 14px 14px 12px; border-radius: 16px; background: var(--space-lift); border: 1px solid var(--hairline); }
 .rhythm-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
@@ -635,6 +636,33 @@ function createRepository(storage = memoryStorage()) {
           : state.contacts.map((x, j) => (j === i ? { ...contact } : x)),
       };
       commit();
+    },
+
+    /**
+     * Edits a contact's name, cadence and note; any of the three may be left
+     * out. Everything else (id, createdAt, lastEngagedAt) and the engagement
+     * history are kept. Throws on an unknown id or an invalid value, and then
+     * changes nothing.
+     */
+    update(id, changes = {}) {
+      const c = state.contacts.find((x) => x.id === id);
+      if (!c) throw new Error(`Unknown contact ${id}`);
+      const next = { ...c };
+      if ('name' in changes) {
+        const name = typeof changes.name === 'string' ? changes.name.trim() : '';
+        if (!name) throw new Error('A contact needs a name');
+        next.name = name;
+      }
+      if ('cadenceDays' in changes) {
+        if (!Number.isInteger(changes.cadenceDays) || changes.cadenceDays <= 0) {
+          throw new Error(`Invalid cadence ${String(changes.cadenceDays)}`);
+        }
+        next.cadenceDays = changes.cadenceDays;
+      }
+      if ('note' in changes) next.note = optStr(changes.note)?.trim() ?? null;
+      state = { ...state, contacts: state.contacts.map((x) => (x.id === id ? next : x)) };
+      commit();
+      return { ...next };
     },
 
     /** Removes the contact and cascades to its engagement history. */
@@ -1457,6 +1485,7 @@ const PATHS = {
   coffee: '<path d="M4 9h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5c-.6.8.6 1.7 0 2.5M12 3.5c-.6.8.6 1.7 0 2.5"/>',
   other: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
   rhythm: '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
+  edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
 };
 
@@ -1932,11 +1961,21 @@ const CADENCE_UNITS = Object.freeze([
   { id: 'months', days: 30, label: 'Months', one: 'month', many: 'months' },
 ]);
 
+/**
+ * Splits a cadence in days into the stepper number and unit the add/edit form
+ * shows: the largest unit that divides it exactly (210 → 7 months, 14 → 2
+ * weeks, 10 → 10 days).
+ */
+function cadenceParts(days) {
+  const u = [...CADENCE_UNITS].reverse().find((x) => days % x.days === 0) ?? CADENCE_UNITS[0];
+  return { number: days / u.days, unit: u.id };
+}
+
 function cadencePreview(n, unitId) {
   const u = CADENCE_UNITS.find((x) => x.id === unitId);
   return `Every ${n} ${n === 1 ? u.one : u.many}`;
 }
-return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, CADENCE_UNITS, cadencePreview };
+return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, CADENCE_UNITS, cadenceParts, cadencePreview };
 })();
 
 // ── src/ui/detailSheet.js ─────────────────────────────────────────────────
@@ -1950,7 +1989,7 @@ const { relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainin
 /**
  * @param {{contact, healthState, history, now}} detail  or null if not found
  */
-function detailSheet(detail, { onClose, onLog, onDelete }) {
+function detailSheet(detail, { onClose, onLog, onEdit, onDelete }) {
   // detail.ratio: elapsed / cadence, or null when nothing has been logged.
   if (!detail) {
     return sheet({ onDismiss: onClose, label: 'Contact not found' },
@@ -1973,7 +2012,9 @@ function detailSheet(detail, { onClose, onLog, onDelete }) {
           contact.name.trim().charAt(0).toUpperCase()),
         h('div', {},
           h('h2', { class: 'hero-name' }, contact.name),
-          healthBadge(healthState, HEALTH_LABELS[healthState]))),
+          healthBadge(healthState, HEALTH_LABELS[healthState])),
+        h('button', { class: 'icon-button hero-edit', 'aria-label': `Edit ${contact.name}`, onclick: onEdit },
+          icon('edit', { size: 18 }))),
       h('div', { class: 'rhythm' },
         h('div', { class: 'rhythm-head' },
           h('span', { class: 'meta-label' }, 'Rhythm'),
@@ -2053,7 +2094,7 @@ const { bottomNav, startOrbitCanvas } = __modules["src/ui/orbitScreen.js"];
 const { HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { toOrbitData } = __modules["src/domain/layout.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
-const { CADENCE_UNITS, cadencePreview, cadenceLabel, relativeLastContact, historyDate } = __modules["src/domain/format.js"];
+const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate } = __modules["src/domain/format.js"];
 
 // Illustrative planets for the onboarding backdrop — one per health state.
 const ONBOARDING_PLANETS = [
@@ -2089,13 +2130,17 @@ function onboardingScreen({ onDone }) {
 const NOTE_MAX = 280;
 const NOTE_COUNTER_THRESHOLD = 240;
 
-function addContactScreen({ onCancel, onSave }) {
-  let number = 2;
-  let unit = 'weeks';
+/**
+ * The add-contact form. Given `contact`, it edits that contact instead: the
+ * fields start from its name, cadence and note, and onSave gets the same
+ * { name, cadenceDays, note } shape.
+ */
+function addContactScreen({ contact = null, onCancel, onSave }) {
+  let { number, unit } = contact ? cadenceParts(contact.cadenceDays) : { number: 2, unit: 'weeks' };
 
   const name = h('input', {
     class: 'input', id: 'name', type: 'text', autocomplete: 'off', maxlength: 60,
-    placeholder: 'Who do you want to stay close to?',
+    placeholder: 'Who do you want to stay close to?', value: contact?.name ?? '',
   });
   const num = h('input', {
     class: 'input cadence-number', type: 'text', inputmode: 'numeric', value: String(number),
@@ -2115,13 +2160,14 @@ function addContactScreen({ onCancel, onSave }) {
     class: 'input', id: 'note', rows: 3, maxlength: NOTE_MAX,
     placeholder: 'Something to remember, or a reason to reach out…',
   });
+  note.value = contact?.note ?? '';
   const counter = h('span', { class: 'note-counter', hidden: true });
   const unitButtons = CADENCE_UNITS.map((u) => h('button', {
     class: 'chip', type: 'button', 'data-unit': u.id,
     onclick: () => { unit = u.id; sync(); },
   }, u.label));
   const saveTop = h('button', { class: 'text-button accent', type: 'submit' }, 'Save');
-  const saveBottom = h('button', { class: 'primary-button', type: 'submit' }, 'Add to orbit');
+  const saveBottom = h('button', { class: 'primary-button', type: 'submit' }, contact ? 'Save changes' : 'Add to orbit');
 
   const days = () => number * CADENCE_UNITS.find((u) => u.id === unit).days;
   const canSave = () => name.value.trim().length > 0 && number > 0;
@@ -2148,7 +2194,7 @@ function addContactScreen({ onCancel, onSave }) {
   note.addEventListener('input', sync);
 
   const form = h('form', {
-    class: 'page add-contact', novalidate: true,
+    class: `page add-contact${contact ? ' edit-contact' : ''}`, novalidate: true,
     onsubmit: (e) => {
       e.preventDefault();
       if (!canSave()) return;
@@ -2158,7 +2204,7 @@ function addContactScreen({ onCancel, onSave }) {
   },
   h('header', { class: 'page-header' },
     h('button', { class: 'text-button', type: 'button', onclick: onCancel }, 'Cancel'),
-    h('h2', { class: 'sheet-title' }, 'Add to orbit'),
+    h('h2', { class: 'sheet-title' }, contact ? 'Edit contact' : 'Add to orbit'),
     saveTop),
   h('div', { class: 'page-scroll' },
     h('label', { class: 'field-label', for: 'name' }, 'Name'),
@@ -2289,6 +2335,7 @@ __modules["src/main.js"] = (() => {
 //   #/onboarding  intro
 //   #/add         add contact
 //   #/contact/:id orbit canvas with the detail sheet open (deep link)
+//   #/contact/:id/edit  edit that contact's name, cadence and note
 //   #/list, #/history, #/settings  (Sprint 2 surfaces, prototyped here)
 const { createRepository, localStorageAdapter, newId, parseBackup } = __modules["src/data/repository.js"];
 const { seedDemo } = __modules["src/data/demo.js"];
@@ -2372,6 +2419,8 @@ function parseRoute() {
   const path = location.hash.replace(/^#/, '') || '/';
   const m = path.match(/^\/contact\/([^/]+)$/);
   if (m) return { name: 'contact', id: decodeURIComponent(m[1]) };
+  const edit = path.match(/^\/contact\/([^/]+)\/edit$/);
+  if (edit) return { name: 'edit', id: decodeURIComponent(edit[1]) };
   return { name: { '/': 'orbit', '/onboarding': 'onboarding', '/add': 'add', '/list': 'list',
     '/history': 'history', '/settings': 'settings' }[path] ?? 'orbit' };
 }
@@ -2419,6 +2468,21 @@ function renderPage(route, now) {
           toast(`${name} added to your orbit`);
         },
       });
+    case 'edit': {
+      const contact = repo.getById(route.id);
+      if (!contact) { go('/'); return null; }
+      const back = () => go(`/contact/${encodeURIComponent(contact.id)}`);
+      return addContactScreen({
+        contact,
+        onCancel: back,
+        onSave: ({ name, cadenceDays, note }) => {
+          // Through the repository, so createdAt, lastEngagedAt and the history stay as they are.
+          repo.update(contact.id, { name, cadenceDays, note });
+          back();
+          toast('Changes saved');
+        },
+      });
+    }
     case 'list':
       return listScreen({
         rows: repo.getAll().map((c) => ({ contact: c, healthState: healthOf(c, now), ratio: ratioOf(c, now) })),
@@ -2499,6 +2563,7 @@ function renderOverlays(route, now) {
   const layers = [detailSheet(detail, {
     onClose: close,
     onLog: () => { overlay = 'log'; render(); },
+    onEdit: () => go(`/contact/${encodeURIComponent(contact.id)}/edit`),
     onDelete: () => { overlay = 'delete'; render(); },
   })];
   // Only a freshly opened route slides the sheet in; in-route re-renders
@@ -2539,6 +2604,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const route = parseRoute();
   if (overlay) { overlay = null; render(); } else if (route.name === 'contact') go('/');
+  else if (route.name === 'edit') go(`/contact/${encodeURIComponent(route.id)}`);
   else if (['add', 'settings'].includes(route.name)) go('/');
 });
 
