@@ -6,7 +6,7 @@
 <title>Expense Mosaic</title>
 <meta name="description" content="Collect receipts into a mosaic you can annotate, total and print." />
 <meta name="theme-color" content="#ECEFF3" />
-<meta name="app-version" content="1.0.1 (8f7019fdb090)" />
+<meta name="app-version" content="1.1.0 (e963b0637383)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -234,6 +234,10 @@
     box-shadow:0 10px 30px rgba(0,0,0,.25);max-width:calc(100vw - 32px);
   }
   .toast.err{background:var(--danger);}
+  /* "New version" banner (see the service worker code at the end of the script). */
+  .update-bar{position:fixed;z-index:95;left:50%;transform:translateX(-50%);top:max(10px,env(safe-area-inset-top));width:min(calc(100% - 24px),536px);display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--hair-strong);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:8px 8px 8px 14px;font-size:14px;}
+  .update-bar[hidden]{display:none;}
+  .update-bar span{flex:1;min-width:0;}
 
   .foot{margin-top:28px;font-size:12px;color:var(--faint);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}
 
@@ -253,7 +257,7 @@
     @page{margin:12mm;}
     body{background:#fff;}
     .wrap{max-width:none;padding:0;}
-    .topbar,.toolbar,.foot,.tools,.grip,.modal,.toast,.dropzone,.empty{display:none !important;}
+    .topbar,.toolbar,.foot,.tools,.grip,.modal,.toast,.update-bar,.dropzone,.empty{display:none !important;}
     .print-only{display:block;}
     .psummary{margin-bottom:8mm;}
     body.p-break .psummary{break-after:page;}
@@ -320,6 +324,11 @@
 </div>
 
 <div class="dropzone" id="dropzone" hidden>Drop to add receipts</div>
+<div class="update-bar" id="updateBar" role="status" hidden>
+  <span>A new version of Expense Mosaic is ready.</span>
+  <button class="btn" type="button" id="updateLater">Later</button>
+  <button class="btn primary" type="button" id="updateReload">Reload</button>
+</div>
 
 <!-- batch settings -->
 <div class="modal" id="batchDlg" hidden>
@@ -1379,8 +1388,34 @@
   });
 
   // Offline support when served over http(s); opened from file:// it simply runs without.
+  // A new release installs in the background and waits (see sw.js); the banner offers to switch to
+  // it. An installed app can stay open for days, so also check hourly and on coming back to it.
   if("serviceWorker" in navigator && location.protocol.indexOf("http")===0){
-    navigator.serviceWorker.register("sw.js").catch(function(e){ console.warn("Service worker not registered", e); });
+    var swReg = null, swApplying = false, updateBar = document.getElementById("updateBar");
+    var showUpdate = function(){
+      if(swReg && swReg.waiting && navigator.serviceWorker.controller) updateBar.hidden = false; // first install: nothing to replace
+    };
+    var checkUpdate = function(){
+      if(navigator.onLine && !swReg.installing) swReg.update().catch(function(){});
+    };
+    document.getElementById("updateLater").addEventListener("click", function(){ updateBar.hidden = true; });
+    document.getElementById("updateReload").addEventListener("click", function(){
+      if(!swReg || !swReg.waiting){ location.reload(); return; }
+      swApplying = true;
+      swReg.waiting.postMessage("SKIP_WAITING");
+      setTimeout(function(){ location.reload(); }, 3000); // in case that worker never takes over
+    });
+    navigator.serviceWorker.addEventListener("controllerchange", function(){ if(swApplying) location.reload(); });
+    navigator.serviceWorker.register("sw.js").then(function(reg){
+      swReg = reg;
+      showUpdate();
+      reg.addEventListener("updatefound", function(){
+        var sw = reg.installing;
+        if(sw) sw.addEventListener("statechange", function(){ if(sw.state === "installed") showUpdate(); });
+      });
+      setInterval(checkUpdate, 60*60*1000);
+      document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible") checkUpdate(); });
+    }).catch(function(e){ console.warn("Service worker not registered", e); });
   }
 })();
 </script>

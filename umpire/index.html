@@ -6,7 +6,7 @@
 <title>Umpire</title>
 <meta name="description" content="Fair calls on repeated rule-breaking: log strikes against a limit and enforce the consequence when it is reached." />
 <meta name="theme-color" content="#ECEFF3" />
-<meta name="app-version" content="1.0.0 (265338af31fa)" />
+<meta name="app-version" content="1.1.0 (e963b0637383)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -31,6 +31,11 @@
     </nav>
   </header>
   <main id="app"></main>
+</div>
+<div class="update-bar" id="updateBar" role="status" hidden>
+  <span>A new version of Umpire is ready.</span>
+  <button type="button" id="updateLater">Later</button>
+  <button class="primary" type="button" id="updateReload">Reload</button>
 </div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <dialog id="dialog"></dialog>

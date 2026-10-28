@@ -157,6 +157,15 @@ button,select,input,textarea{font-family:inherit;color:var(--ink);font-size:inhe
 .toast.show{opacity:1;transform:translateX(-50%);pointer-events:auto;}
 .toast button{appearance:none;border:0;background:transparent;color:inherit;font-weight:700;text-decoration:underline;cursor:pointer;padding:0;}
 
+/* ---------- "new version" banner (watchForUpdates in js/main.js) ---------- */
+.update-bar{
+  position:fixed;z-index:40;left:50%;transform:translateX(-50%);top:max(10px,env(safe-area-inset-top));
+  width:min(calc(100% - 24px),536px);display:flex;align-items:center;gap:8px;
+  background:var(--panel);border:1px solid var(--hair-strong);border-radius:12px;box-shadow:var(--shadow);padding:8px 8px 8px 14px;font-size:14px;
+}
+.update-bar[hidden]{display:none;}
+.update-bar span{flex:1;min-width:0;}
+
 /* ---------- dialogs ---------- */
 dialog.modal{border:0;padding:0;background:transparent;max-width:min(480px,calc(100vw - 24px));width:100%;color:var(--ink);}
 dialog.modal::backdrop{background:rgba(12,16,22,.5);}

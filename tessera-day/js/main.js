@@ -328,6 +328,32 @@ if (saved.scope === 'year') app.ui.scope = 'year';
 route();
 
 // Offline support (needs http(s); ES modules don't load from file:// anyway).
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker not registered', e));
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) watchForUpdates();
+
+// A new release installs in the background and waits (see sw.js); the banner offers to switch to
+// it. An installed app can stay open for days, so also check hourly and on coming back to it.
+function watchForUpdates() {
+  const bar = document.getElementById('updateBar');
+  let reg = null;
+  let applying = false;
+  const show = () => { if (reg?.waiting && navigator.serviceWorker.controller) bar.hidden = false; }; // first install: nothing to replace
+  const check = () => { if (navigator.onLine && !reg.installing) reg.update().catch(() => {}); };
+  document.getElementById('updateLater').onclick = () => { bar.hidden = true; };
+  document.getElementById('updateReload').onclick = () => {
+    if (!reg?.waiting) { location.reload(); return; }
+    applying = true;
+    reg.waiting.postMessage('SKIP_WAITING');
+    setTimeout(() => location.reload(), 3000); // in case that worker never takes over
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (applying) location.reload(); });
+  navigator.serviceWorker.register('sw.js').then(r => {
+    reg = r;
+    show();
+    r.addEventListener('updatefound', () => {
+      const sw = r.installing;
+      sw?.addEventListener('statechange', () => { if (sw.state === 'installed') show(); });
+    });
+    setInterval(check, 60 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  }).catch(e => console.warn('Service worker not registered', e));
 }

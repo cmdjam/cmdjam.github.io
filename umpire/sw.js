@@ -3,7 +3,9 @@
 // Bump VERSION whenever any file in ASSETS changes (the deploy workflow does this for you):
 // the browser sees the new sw.js, installs the new set into a fresh cache, and the old cache is
 // deleted on activate. Each version is served whole, so files from different releases never mix.
-const VERSION = 'umpire-265338af31fa';
+// A new version waits until the page asks it to take over (its "new version" banner), so a
+// release never swaps out under a page that is still running the old code.
+const VERSION = 'umpire-e963b0637383';
 const ASSETS = [
   './',
   'index.html',
@@ -21,7 +23,11 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)));
+});
+
+self.addEventListener('message', e => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', e => {
