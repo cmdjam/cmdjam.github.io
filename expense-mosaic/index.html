@@ -6,7 +6,7 @@
 <title>Expense Mosaic</title>
 <meta name="description" content="Collect receipts into a mosaic you can annotate, total and print." />
 <meta name="theme-color" content="#ECEFF3" />
-<meta name="app-version" content="1.0.0 (ed2aae2fb92b)" />
+<meta name="app-version" content="1.0.1 (8f7019fdb090)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -423,20 +423,70 @@
   var DEFAULT_CATS = ["Travel","Transport","Lodging","Meals","Fuel","Parking","Supplies","Software","Phone","Other"];
   var CURRENCIES = ["GBP","EUR","USD","AUD","CAD","NZD","CHF","SEK","NOK","DKK","PLN","JPY","INR","SGD","HKD","ZAR"];
 
-  // ---------- state ----------
-  var S = { batches:[], batch:null, items:[], urls:{} };
-  var ui = { batchId:null, tile:220, captions:true, print:{ cols:3, summary:true, pageBreak:false, captions:true } };
-  var viewIdx = -1;
-
-  function $(s, r){ return (r||document).querySelector(s); }
+  // ---------- pure helpers ----------
+  // No DOM, storage or app state in here: tests/app.mjs runs this part of the script (from
+  // `var DB_NAME` up to the "state" comment) in node. Keep both markers.
   function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
-  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
   function orderBetween(a,b){
     if(a==null && b==null) return 0;
     if(a==null) return b-1;
     if(b==null) return a+1;
     return (a+b)/2;
   }
+  // Reads a typed amount: "1,234.50", "1.234,50", "€12,50", "1 234,50", "$-3". When both "." and ","
+  // appear, the last one is the decimal point; a lone "," is thousands only before exactly 3 digits.
+  function parseAmount(s){
+    if(s==null) return null;
+    var t = String(s).replace(/[^\d.,-]/g,"");
+    var dot = t.lastIndexOf("."), com = t.lastIndexOf(",");
+    if(dot >= 0 && com >= 0) t = dot > com ? t.replace(/,/g,"") : t.replace(/\./g,"").replace(",", ".");
+    else if(com >= 0) t = t.replace(/,(?=\d{3}(\D|$))/g,"").replace(",", ".");
+    else if(t.indexOf(".") !== dot) t = t.replace(/\./g,"");   // "1.234.567": dots are thousands
+    var n = parseFloat(t);
+    return isFinite(n) ? n : null;
+  }
+  function summarize(items){
+    var total = 0, missing = 0, dates = [], cats = {};
+    items.forEach(function(i){
+      var a = parseAmount(i.amount);
+      if(a==null) missing++; else { total += a; var c = i.category || "Uncategorised"; cats[c] = (cats[c]||0) + a; }
+      if(i.date) dates.push(i.date);
+    });
+    dates.sort();
+    return { count:items.length, total:total, missing:missing, from:dates[0], to:dates[dates.length-1], cats:cats };
+  }
+  // Crop maths. The crop is normalised 0–1 in rotated space; rot is 0/90/180/270 clockwise.
+  function rotDimsOf(w, h, rot){ return rot % 180 ? { w:h, h:w } : { w:w, h:h }; }
+  // The same region of the original, expressed in the space rotated a further 90° (dir > 0) or -90°.
+  function rotateCrop(c, dir){
+    return dir > 0 ? { x:1-c.y-c.h, y:c.x, w:c.h, h:c.w } : { x:c.y, y:1-c.x-c.w, w:c.h, h:c.w };
+  }
+  function isIdentityEdit(rot, c){ return rot===0 && c.x<=0.001 && c.y<=0.001 && c.w>=0.999 && c.h>=0.999; }
+  // Pixel size of the re-rendered image: the crop of the rotated original (d = rotDimsOf(...)).
+  function cropSize(d, c){ return { w:Math.max(1, Math.round(c.w*d.w)), h:Math.max(1, Math.round(c.h*d.h)) }; }
+  // Export/import. An export item is the item's metadata without batchId, plus data-URL images.
+  function exportMeta(item){ var meta = Object.assign({}, item); delete meta.batchId; return meta; }
+  function validImport(d){ return !!d && d.format === EXPORT_FORMAT && Array.isArray(d.items); }
+  function isImageDataUrl(s){ return typeof s === "string" && s.indexOf("data:image/") === 0; }
+  function importedBatchMeta(d){
+    var b = d.batch || {};
+    return { name:String(b.name || "Imported batch"), currency:/^[A-Z]{3}$/.test(b.currency) ? b.currency : null, notes:String(b.notes || "") };
+  }
+  // Always a fresh id in the new batch, never the exported one. edited: the export carried an `img`.
+  function importedItem(x, k, batchId, edited){
+    return { id:uid(), batchId:batchId, order: typeof x.order==="number" ? x.order : k,
+      name:String(x.name||"image"), label:String(x.label||""), date:/^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : "",
+      amount:String(x.amount==null ? "" : x.amount), category:String(x.category||""), note:String(x.note||""),
+      w:+x.w || 1, h:+x.h || 1, mime:"", edit:x.edit && edited ? x.edit : null, fromPdf:!!x.fromPdf, added:+x.added || Date.now() };
+  }
+
+  // ---------- state ----------
+  var S = { batches:[], batch:null, items:[], urls:{} };
+  var ui = { batchId:null, tile:220, captions:true, print:{ cols:3, summary:true, pageBreak:false, captions:true } };
+  var viewIdx = -1;
+
+  function $(s, r){ return (r||document).querySelector(s); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
   function byOrder(a,b){ return a.order-b.order; }
 
   function loadUi(){
@@ -717,11 +767,6 @@
   }
 
   // ---------- formatting ----------
-  function parseAmount(s){
-    if(s==null || s==="") return null;
-    var n = parseFloat(String(s).replace(/[^\d.,-]/g,"").replace(/,(?=\d{3}(\D|$))/g,"").replace(",", "."));
-    return isFinite(n) ? n : null;
-  }
   function money(n){
     try{ return new Intl.NumberFormat(undefined, { style:"currency", currency:S.batch.currency||"GBP" }).format(n); }
     catch(e){ return (S.batch.currency||"") + " " + n.toFixed(2); }
@@ -732,16 +777,7 @@
     if(isNaN(dt)) return d;
     return dt.toLocaleDateString(undefined, long ? { day:"numeric", month:"short", year:"numeric" } : { day:"numeric", month:"short" });
   }
-  function summary(){
-    var total = 0, missing = 0, dates = [], cats = {};
-    S.items.forEach(function(i){
-      var a = parseAmount(i.amount);
-      if(a==null) missing++; else { total += a; var c = i.category || "Uncategorised"; cats[c] = (cats[c]||0) + a; }
-      if(i.date) dates.push(i.date);
-    });
-    dates.sort();
-    return { count:S.items.length, total:total, missing:missing, from:dates[0], to:dates[dates.length-1], cats:cats };
-  }
+  function summary(){ return summarize(S.items); }
   function rangeText(sm){
     if(!sm.from) return "";
     return sm.from===sm.to ? fmtDate(sm.from, true) : fmtDate(sm.from, sm.from.slice(0,4)!==sm.to.slice(0,4)) + " – " + fmtDate(sm.to, true);
@@ -983,10 +1019,7 @@
       requestAnimationFrame(drawCrop);
     }).catch(function(e){ toast("Couldn't open image: " + e.message, true); });
   }
-  function rotDims(){
-    var iw = C.img.naturalWidth, ih = C.img.naturalHeight;
-    return C.rot % 180 ? { w:ih, h:iw } : { w:iw, h:ih };
-  }
+  function rotDims(){ return rotDimsOf(C.img.naturalWidth, C.img.naturalHeight, C.rot); }
   function drawRotated(ctx){
     var d = rotDims();
     ctx.translate(d.w/2, d.h/2);
@@ -1055,8 +1088,7 @@
   cv.addEventListener("pointercancel", endCropDrag);
 
   function rotate(dir){
-    var c = C.crop;
-    C.crop = dir > 0 ? { x:1-c.y-c.h, y:c.x, w:c.h, h:c.w } : { x:c.y, y:1-c.x-c.w, w:c.h, h:c.w };
+    C.crop = rotateCrop(C.crop, dir);
     C.rot = (C.rot + (dir > 0 ? 90 : 270)) % 360;
     drawCrop();
   }
@@ -1065,9 +1097,9 @@
   $("#cReset").addEventListener("click", function(){ C.rot = 0; C.crop = Object.assign({}, FULL); drawCrop(); });
   $("#cApply").addEventListener("click", function(){
     var item = C.item, c = C.crop, d = rotDims();
-    var identity = C.rot===0 && c.x<=0.001 && c.y<=0.001 && c.w>=0.999 && c.h>=0.999;
+    var identity = isIdentityEdit(C.rot, c), size = cropSize(d, c);
     var out = document.createElement("canvas");
-    out.width = Math.max(1, Math.round(c.w*d.w)); out.height = Math.max(1, Math.round(c.h*d.h));
+    out.width = size.w; out.height = size.h;
     var ctx = out.getContext("2d");
     ctx.fillStyle = "#fff"; ctx.fillRect(0,0,out.width,out.height);
     ctx.translate(-c.x*d.w, -c.y*d.h);
@@ -1273,7 +1305,7 @@
       return Promise.all(items.map(function(i){
         var rec = blobs[i.id];
         return Promise.all([blobToDataUrl(rec.orig), rec.img===rec.orig ? null : blobToDataUrl(rec.img)]).then(function(u){
-          var meta = Object.assign({}, i); delete meta.batchId;
+          var meta = exportMeta(i);
           meta.orig = u[0]; if(u[1]) meta.img = u[1];
           return meta;
         });
@@ -1295,17 +1327,14 @@
     if(!f) return;
     toast("Importing…", false, 0);
     f.text().then(JSON.parse).then(function(d){
-      if(!d || d.format !== EXPORT_FORMAT || !Array.isArray(d.items)) throw new Error("not an Expense Mosaic export");
-      var b = newBatchRec(String(d.batch && d.batch.name || "Imported batch"));
-      if(d.batch && /^[A-Z]{3}$/.test(d.batch.currency)) b.currency = d.batch.currency;
-      b.notes = String(d.batch && d.batch.notes || "");
+      if(!validImport(d)) throw new Error("not an Expense Mosaic export");
+      var m = importedBatchMeta(d), b = newBatchRec(m.name);
+      if(m.currency) b.currency = m.currency;
+      b.notes = m.notes;
       return Promise.all(d.items.map(function(x, k){
-        if(typeof x.orig !== "string" || x.orig.indexOf("data:image/") !== 0) return null;
-        return Promise.all([fetch(x.orig).then(function(r){ return r.blob(); }), typeof x.img==="string" && x.img.indexOf("data:image/")===0 ? fetch(x.img).then(function(r){ return r.blob(); }) : null]).then(function(bl){
-          var item = { id:uid(), batchId:b.id, order: typeof x.order==="number" ? x.order : k,
-            name:String(x.name||"image"), label:String(x.label||""), date:/^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : "",
-            amount:String(x.amount==null ? "" : x.amount), category:String(x.category||""), note:String(x.note||""),
-            w:+x.w || 1, h:+x.h || 1, mime:"", edit:x.edit && bl[1] ? x.edit : null, fromPdf:!!x.fromPdf, added:+x.added || Date.now() };
+        if(!isImageDataUrl(x.orig)) return null;
+        return Promise.all([fetch(x.orig).then(function(r){ return r.blob(); }), isImageDataUrl(x.img) ? fetch(x.img).then(function(r){ return r.blob(); }) : null]).then(function(bl){
+          var item = importedItem(x, k, b.id, !!bl[1]);
           item.mime = (bl[1] || bl[0]).type;
           return { item:item, blobs:{ id:item.id, orig:bl[0], img:bl[1] || bl[0] } };
         });
