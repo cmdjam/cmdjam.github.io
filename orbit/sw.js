@@ -2,7 +2,9 @@
 // Bump VERSION whenever a file in ASSETS changes (the deploy workflow does this for you): the
 // browser sees the new sw.js, installs the new set into a fresh cache, and the old cache is
 // deleted on activate. Each version is served whole, so files from different releases never mix.
-const VERSION = 'orbit-15804ed1bffc';
+// A new version waits until the page asks it to take over (the "new version" banner, or
+// pull-to-refresh), so a release never swaps out under a page that is still running old code.
+const VERSION = 'orbit-efb32c959c08';
 const ASSETS = [
   './',
   'index.html',
@@ -20,7 +22,11 @@ const FONTS_CACHE = 'orbit-fonts';
 const FONT_HOSTS = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)));
+});
+
+self.addEventListener('message', e => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', e => {
