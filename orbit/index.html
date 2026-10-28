@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.3.0 (efb32c959c08)">
+  <meta name="app-version" content="1.3.1 (27396b6949c8)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -62,7 +62,10 @@ body {
   color: var(--text-primary);
   font: 400 14px/1.45 var(--sans);
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  /* No overflow: hidden here: a page that can't scroll at all gets no browser pull-to-refresh.
+     The frame fits the screen, so nothing scrolls; flow-root keeps the desktop frame's top
+     margin inside body instead of pushing body down past the window. */
+  display: flow-root;
 }
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -492,7 +495,7 @@ h1, h2, h3, p { margin: 0; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* ── Updates: new-version banner and pull-to-refresh ───────────────────── */
+/* ── Updates: new-version banner ───────────────────────────────────────── */
 .update-banner {
   position: absolute; left: 50%; top: calc(var(--safe-top) + 10px); z-index: 30;
   transform: translateX(-50%); width: calc(100% - 24px);
@@ -505,19 +508,6 @@ h1, h2, h3, p { margin: 0; }
 }
 .update-banner span { flex: 1; min-width: 0; }
 @keyframes banner-in { from { opacity: 0; transform: translate(-50%, -12px); } }
-.pull-indicator {
-  position: absolute; left: 50%; top: calc(var(--safe-top) - 44px); z-index: 25;
-  width: 40px; height: 40px; border-radius: 50%;
-  display: grid; place-items: center; color: var(--text-secondary);
-  background: var(--space-card); border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  transform: translate(-50%, 0); opacity: 0; pointer-events: none;
-}
-.pull-indicator.settling { transition: transform 200ms var(--ease-out), opacity 200ms; }
-.pull-indicator.armed, .pull-indicator.spinning { color: var(--accent); }
-.pull-indicator.spinning .icon { animation: spin 0.9s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .pull-indicator.spinning .icon { animation: none; } }
   </style>
 </head>
 <body>
@@ -1514,7 +1504,6 @@ const PATHS = {
   rhythm: '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
-  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4v4h-4"/>',
 };
 
 function icon(name, { size = 20, label } = {}) {
@@ -2357,26 +2346,14 @@ return { onboardingScreen, addContactScreen, listScreen, historyScreen, settings
 
 // ── src/ui/updates.js ─────────────────────────────────────────────────────
 __modules["src/ui/updates.js"] = (() => {
-// Updates for the installed app: the "new version" banner and pull-to-refresh.
+// Updates for the installed app: the "new version" banner.
 // A new sw.js installs in the background and waits (see sw.js); the banner offers to activate it,
-// which reloads the page onto the new release. An installed PWA gets no browser pull-to-refresh
-// and can stay open for days, so the app checks for a release hourly, whenever it comes back to
-// the foreground, and when you pull down from the top of the screen.
+// which reloads the page onto the new release. An installed PWA can stay open for days, so the app
+// also checks for a release hourly and whenever it comes back to the foreground.
 const { h } = __modules["src/ui/dom.js"];
-const { icon } = __modules["src/ui/icons.js"];
-
-const PULL_TRIGGER = 72; // px of indicator travel that triggers a refresh
-const PULL_MAX = 110;
-const CHECK_TIMEOUT = 5000;
-
-/** Indicator travel for a finger that has moved `dy` px down: damped, capped at PULL_MAX. */
-function pullDistance(dy) {
-  return dy <= 0 ? 0 : Math.min(PULL_MAX, dy * 0.5);
-}
 
 /**
- * Registers sw.js and wires up the banner and the pull gesture on `root`.
- * `swUrl` is null where there is no service worker; pull-to-refresh then just reloads.
+ * Registers sw.js and shows the banner on `root` when a new release is waiting.
  * `toast` announces when the first install has cached the app for offline use, as Daymark does.
  */
 function startUpdates(root, swUrl, toast) {
@@ -2399,99 +2376,30 @@ function startUpdates(root, swUrl, toast) {
       h('button', { class: 'text-button accent', onclick: apply }, 'Reload'));
     root.append(banner);
   };
-  // Resolves once the worker that is installing (if any) has finished installing.
-  const installed = (sw) => new Promise((resolve) => {
-    if (!sw || sw.state !== 'installing') { resolve(); return; }
-    sw.addEventListener('statechange', () => { if (sw.state !== 'installing') resolve(); });
-  });
-  const check = () => (reg && navigator.onLine ? reg.update() : Promise.resolve()).catch(() => {});
-
-  if (swUrl) {
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (applying) location.reload(); });
-    const firstInstall = !navigator.serviceWorker.controller;
-    navigator.serviceWorker.register(swUrl).then((r) => {
-      reg = r;
-      if (firstInstall) {
-        const sw = r.installing || r.waiting || r.active;
-        const ready = () => { if (sw.state === 'activated') { toast('Ready to work offline'); return true; } return false; };
-        if (sw && !ready()) sw.addEventListener('statechange', function onState() { if (ready()) sw.removeEventListener('statechange', onState); });
-      }
-      showBanner();
-      r.addEventListener('updatefound', () => installed(r.installing).then(showBanner));
-      setInterval(check, 60 * 60 * 1000);
-      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
-    }).catch((e) => console.warn('Service worker not registered', e));
-  }
-
-  // Pull-to-refresh: fetch any new release, then reload onto it (or just reload).
-  const refresh = async () => {
-    const timeout = new Promise((resolve) => setTimeout(resolve, CHECK_TIMEOUT));
-    await Promise.race([check().then(() => installed(reg?.installing)), timeout]);
-    apply();
+  // Shows the banner once the worker that is installing (if any) has finished installing.
+  const whenInstalled = (sw) => {
+    if (sw?.state !== 'installing') { showBanner(); return; }
+    sw.addEventListener('statechange', () => { if (sw.state !== 'installing') showBanner(); });
   };
-  pullToRefresh(root, refresh);
+  const check = () => { if (navigator.onLine && reg.installing == null) reg.update().catch(() => {}); };
+
+  if (!swUrl) return;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (applying) location.reload(); });
+  const firstInstall = !navigator.serviceWorker.controller;
+  navigator.serviceWorker.register(swUrl).then((r) => {
+    reg = r;
+    if (firstInstall) {
+      const sw = r.installing || r.waiting || r.active;
+      const ready = () => { if (sw.state === 'activated') { toast('Ready to work offline'); return true; } return false; };
+      if (sw && !ready()) sw.addEventListener('statechange', function onState() { if (ready()) sw.removeEventListener('statechange', onState); });
+    }
+    showBanner();
+    r.addEventListener('updatefound', () => whenInstalled(r.installing));
+    setInterval(check, 60 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  }).catch((e) => console.warn('Service worker not registered', e));
 }
-
-function pullToRefresh(root, refresh) {
-  const indicator = h('div', { class: 'pull-indicator', 'aria-hidden': 'true' }, icon('refresh', { size: 20 }));
-  root.append(indicator);
-  let startX = 0;
-  let startY = 0;
-  let pull = 0;
-  let tracking = false;
-  let busy = false;
-
-  const show = (d) => {
-    indicator.style.transform = `translate(-50%, ${d}px) rotate(${d * 3}deg)`;
-    indicator.style.opacity = String(Math.min(1, d / PULL_TRIGGER));
-    indicator.classList.toggle('armed', d >= PULL_TRIGGER);
-  };
-  const reset = () => {
-    indicator.classList.add('settling');
-    indicator.style.transform = '';
-    indicator.style.opacity = '';
-    indicator.classList.remove('armed');
-  };
-  // Only from the orbit or a page scrolled to its top, never from a sheet, dialog or text field.
-  const canStart = (target) => {
-    if (busy || !(target instanceof Element)) return false;
-    if (target.closest('.sheet-layer, .dialog-layer, .update-banner, input, textarea, select')) return false;
-    const scroller = target.closest('.page-scroll');
-    return !scroller || scroller.scrollTop <= 0;
-  };
-
-  root.addEventListener('touchstart', (e) => {
-    tracking = e.touches.length === 1 && canStart(e.target);
-    if (!tracking) return;
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-    pull = 0;
-    indicator.classList.remove('settling');
-  }, { passive: true });
-
-  root.addEventListener('touchmove', (e) => {
-    if (!tracking) return;
-    const dx = e.touches[0].clientX - startX;
-    const dy = e.touches[0].clientY - startY;
-    // A sideways or upward gesture isn't a pull; let it go.
-    if (pull === 0 && (dy <= 0 || Math.abs(dx) > dy)) { tracking = false; return; }
-    pull = pullDistance(dy);
-    show(pull);
-  }, { passive: true });
-
-  const end = () => {
-    if (!tracking) return;
-    tracking = false;
-    if (pull < PULL_TRIGGER) { reset(); return; }
-    busy = true;
-    indicator.classList.add('settling', 'spinning');
-    indicator.style.transform = `translate(-50%, ${PULL_TRIGGER}px)`;
-    refresh();
-  };
-  root.addEventListener('touchend', end);
-  root.addEventListener('touchcancel', () => { if (tracking) { tracking = false; reset(); } });
-}
-return { pullDistance, startUpdates };
+return { startUpdates };
 })();
 
 // ── src/main.js ───────────────────────────────────────────────────────────
@@ -2779,9 +2687,8 @@ window.addEventListener('keydown', (e) => {
 // Fires immediately (initial render) and again after every write.
 repo.watchAll((contacts) => { refreshOrbit(contacts); render(); });
 
-// Offline support for the deployed app (see sw.js), the update banner and pull-to-refresh.
-// Opened from file:// or content:// there is nothing to cache, and from /src/ during development
-// there is no sw.js; pull-to-refresh then just reloads.
+// Offline support for the deployed app (see sw.js) and the update banner. Opened from file:// or
+// content:// there is nothing to cache, and from /src/ during development there is no sw.js.
 const swEnabled = 'serviceWorker' in navigator && location.protocol.startsWith('http') && !location.pathname.includes('/src/');
 startUpdates(app, swEnabled ? 'sw.js' : null, toast);
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
