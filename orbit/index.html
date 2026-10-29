@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.3.1 (27396b6949c8)">
+  <meta name="app-version" content="1.4.0 (6d699c2606b4)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -459,6 +459,31 @@ h1, h2, h3, p { margin: 0; }
 .type-button:active { transform: scale(0.97); }
 .type-icon { width: 40px; height: 40px; border-radius: 14px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
 
+/* History (Sprint 2 spec): filter, month groups, edit sheet */
+.history-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin: 4px 0 8px; }
+.history-filter { min-height: 48px; padding: 10px 14px; appearance: auto; }
+.history-count { font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.history-month + .history-month { margin-top: 16px; }
+.month-title {
+  margin: 8px 0 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.history .see-all { display: block; margin: 2px auto 0; }
+.edit-engagement form { display: grid; text-align: left; overflow-y: auto; min-height: 0; }
+.edit-engagement .sheet-title { margin-bottom: 2px; text-align: center; }
+.edit-engagement .field-label { display: block; margin: 14px 0 8px; }
+.edit-engagement .type-button { min-height: 64px; flex-direction: row; gap: 10px; }
+.edit-engagement .type-icon { width: 32px; height: 32px; border-radius: 11px; }
+.edit-engagement .type-button[aria-pressed="true"] {
+  border-color: rgba(123, 143, 255, 0.6); background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(123, 143, 255, 0.35);
+}
+.edit-engagement input[type="date"] { color-scheme: dark; min-height: 48px; }
+.edit-actions { display: grid; justify-items: center; margin-top: 16px; }
+.edit-actions .primary-button { margin-bottom: 4px; }
+.link-button.inline { padding: 0 2px; min-height: 0; font-size: inherit; color: var(--text-primary); position: relative; }
+.link-button.inline::after { content: ''; position: absolute; inset: -14px -6px; }
+.link-button.danger { color: var(--danger); }
+
 .dialog-layer { display: grid; place-items: center; padding: 24px; }
 .dialog {
   position: relative; width: 100%; max-width: 320px;
@@ -616,6 +641,25 @@ const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+/**
+ * Contacts with the changed engagement's contact given a corrected
+ * lastEngagedAt. `old` is the engagement as it was before the edit or delete;
+ * `engagements` is the list after it. When `old` set the contact's date, the
+ * date is recomputed from what is left (null if nothing is); otherwise it
+ * only ever moves later, so a date that came from an import is kept.
+ */
+function withLastEngaged(contacts, engagements, old) {
+  return contacts.map((c) => {
+    if (c.id !== old.contactId) return c;
+    const mine = engagements.filter((e) => e.contactId === c.id).map((e) => e.loggedAt);
+    const wasLatest = c.lastEngagedAt == null || old.loggedAt >= c.lastEngagedAt;
+    const last = wasLatest
+      ? (mine.length ? Math.max(...mine) : null)
+      : Math.max(c.lastEngagedAt, ...mine);
+    return { ...c, lastEngagedAt: last };
+  });
+}
+
 function createRepository(storage = memoryStorage()) {
   let state = storage.load() ?? emptyState();
   const listeners = new Set();
@@ -704,6 +748,43 @@ function createRepository(storage = memoryStorage()) {
       };
       commit();
       return engagement;
+    },
+
+    /**
+     * Edits a logged catch-up's type and/or date. Throws on an unknown id or
+     * an invalid value, and then changes nothing. The contact's last-contact
+     * date follows: if this was its latest catch-up, it becomes the latest of
+     * the remaining ones and the new date; otherwise it only moves later.
+     */
+    updateEngagement(id, changes = {}) {
+      const old = state.engagements.find((e) => e.id === id);
+      if (!old) throw new Error(`Unknown engagement ${id}`);
+      const next = { ...old };
+      if ('type' in changes) {
+        if (!isStr(changes.type)) throw new Error('A catch-up needs a type');
+        next.type = changes.type;
+      }
+      if ('loggedAt' in changes) {
+        if (!isNum(changes.loggedAt)) throw new Error(`Invalid date ${String(changes.loggedAt)}`);
+        next.loggedAt = changes.loggedAt;
+      }
+      const engagements = state.engagements.map((e) => (e.id === id ? next : e));
+      state = { engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
+      commit();
+      return { ...next };
+    },
+
+    /**
+     * Removes one logged catch-up. If it was the contact's latest, the
+     * last-contact date falls back to the latest remaining one, or null when
+     * none is left (the contact is then treated as never contacted).
+     */
+    deleteEngagement(id) {
+      const old = state.engagements.find((e) => e.id === id);
+      if (!old) throw new Error(`Unknown engagement ${id}`);
+      const engagements = state.engagements.filter((e) => e.id !== id);
+      state = { engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
+      commit();
     },
 
     /** Newest first. Omit contactId for the whole log. */
@@ -1992,7 +2073,52 @@ function cadencePreview(n, unitId) {
   const u = CADENCE_UNITS.find((x) => x.id === unitId);
   return `Every ${n} ${n === 1 ? u.one : u.many}`;
 }
-return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, CADENCE_UNITS, cadenceParts, cadencePreview };
+
+const FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** Local calendar day of a timestamp, as 'YYYY-MM-DD' (the value of an <input type="date">). */
+function dateKey(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * The timestamp for a catch-up moved to local day `key`, keeping its time of
+ * day, and never later than `now`. Returns null for a malformed key.
+ */
+function moveToDate(loggedAt, key, now) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key ?? '');
+  if (!m) return null;
+  const t = new Date(loggedAt);
+  const moved = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds());
+  if (moved.getDate() !== Number(m[3])) return null; // e.g. Feb 30
+  return Math.min(moved.getTime(), now);
+}
+
+/**
+ * History entries (newest first) grouped by local month, newest month first:
+ * [{ key: '2026-10', title: 'October 2026', entries }]. The year is left out
+ * for the current year.
+ */
+function groupByMonth(entries, now) {
+  const year = new Date(now).getFullYear();
+  const groups = [];
+  for (const e of entries) {
+    const d = new Date(e.loggedAt);
+    const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+    let g = groups.at(-1);
+    if (!g || g.key !== key) {
+      g = { key, title: FULL_MONTHS[d.getMonth()] + (d.getFullYear() === year ? '' : ` ${d.getFullYear()}`), entries: [] };
+      groups.push(g);
+    }
+    g.entries.push(e);
+  }
+  return groups;
+}
+return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, CADENCE_UNITS, cadenceParts, cadencePreview, dateKey, moveToDate, groupByMonth };
 })();
 
 // ── src/ui/detailSheet.js ─────────────────────────────────────────────────
@@ -2001,12 +2127,12 @@ const { h, sheet, healthBadge, rhythmMeter } = __modules["src/ui/dom.js"];
 const { icon } = __modules["src/ui/icons.js"];
 const { HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { ENGAGEMENT_TYPES, engagementType } = __modules["src/domain/engagement.js"];
-const { relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate } = __modules["src/domain/format.js"];
+const { relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, dateKey, moveToDate } = __modules["src/domain/format.js"];
 
 /**
  * @param {{contact, healthState, history, now}} detail  or null if not found
  */
-function detailSheet(detail, { onClose, onLog, onEdit, onDelete }) {
+function detailSheet(detail, { onClose, onLog, onEdit, onDelete, onHistory }) {
   // detail.ratio: elapsed / cadence, or null when nothing has been logged.
   if (!detail) {
     return sheet({ onDismiss: onClose, label: 'Contact not found' },
@@ -2056,7 +2182,9 @@ function detailSheet(detail, { onClose, onLog, onEdit, onDelete }) {
             h('span', { class: 'history-icon' }, icon(e.type, { size: 15 })),
             h('span', { class: 'history-label' }, t.label),
             h('span', { class: 'history-date' }, historyDate(e.loggedAt, now)));
-        }))),
+        })),
+        h('button', { class: 'link-button see-all', onclick: onHistory },
+          history.length > 5 ? `See all ${history.length}` : 'Edit in History')),
       h('div', { class: 'center' },
         h('button', { class: 'link-button', onclick: onDelete }, 'Remove from orbit'))),
     h('div', { class: 'sheet-footer' },
@@ -2099,7 +2227,61 @@ function importDialog({ contacts, engagements, onMerge, onReplace, onCancel }) {
         h('button', { class: 'text-button danger', onclick: onReplace }, 'Replace'),
         h('button', { class: 'text-button', onclick: onMerge }, 'Merge'))));
 }
-return { detailSheet, logSheet, confirmDialog, importDialog };
+
+/**
+ * Edit one logged catch-up: its type and its day (not in the future). Save
+ * passes { type, loggedAt } with the time of day kept; Delete asks first.
+ */
+function editEngagementSheet({ engagement, name, now, onSave, onDelete, onOpenContact, onClose }) {
+  let type = engagement.type;
+  const today = dateKey(now);
+  const date = h('input', {
+    class: 'input', id: 'engagement-date', type: 'date', max: today, value: dateKey(engagement.loggedAt), required: true,
+  });
+  const error = h('p', { class: 'field-error', hidden: true }, 'Pick a day up to today');
+  const typeButtons = ENGAGEMENT_TYPES.map((t) => h('button', {
+    class: `type-button t-${t.id}`, type: 'button', 'data-type': t.id,
+    onclick: () => { type = t.id; sync(); },
+  }, h('span', { class: 'type-icon' }, icon(t.id, { size: 20 })), t.label));
+  const save = h('button', { class: 'primary-button', type: 'submit' }, 'Save changes');
+
+  const loggedAt = () => {
+    const key = date.value;
+    if (key === dateKey(engagement.loggedAt)) return engagement.loggedAt;
+    return key && key <= today ? moveToDate(engagement.loggedAt, key, now) : null;
+  };
+  function sync() {
+    typeButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.type === type)));
+    const ok = loggedAt() != null;
+    error.hidden = ok;
+    save.disabled = !ok;
+  }
+  date.addEventListener('input', sync);
+  date.addEventListener('change', sync);
+  sync();
+
+  return sheet({ className: 'log-sheet edit-engagement', onDismiss: onClose, label: `Edit catch-up with ${name}` },
+    h('form', {
+      novalidate: true,
+      onsubmit: (e) => {
+        e.preventDefault();
+        const at = loggedAt();
+        if (at != null) onSave({ type, loggedAt: at });
+      },
+    },
+    h('h3', { class: 'sheet-title' }, 'Edit catch-up'),
+    h('p', { class: 'body-secondary center' }, 'With ', h('button', { class: 'link-button inline', type: 'button', onclick: onOpenContact }, name)),
+    h('div', { class: 'field-label' }, 'How did you connect?'),
+    h('div', { class: 'type-grid', role: 'group', 'aria-label': 'How did you connect?' }, typeButtons),
+    h('label', { class: 'field-label', for: 'engagement-date' }, 'Day'),
+    date,
+    error,
+    h('div', { class: 'edit-actions' },
+      save,
+      h('button', { class: 'link-button danger', type: 'button', onclick: onDelete }, 'Delete catch-up'),
+      h('button', { class: 'link-button', type: 'button', onclick: onClose }, 'Cancel'))));
+}
+return { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet };
 })();
 
 // ── src/ui/screens.js ─────────────────────────────────────────────────────
@@ -2111,7 +2293,7 @@ const { bottomNav, startOrbitCanvas } = __modules["src/ui/orbitScreen.js"];
 const { HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { toOrbitData } = __modules["src/domain/layout.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
-const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate } = __modules["src/domain/format.js"];
+const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate, groupByMonth } = __modules["src/domain/format.js"];
 
 // Illustrative planets for the onboarding backdrop — one per health state.
 const ONBOARDING_PLANETS = [
@@ -2282,20 +2464,48 @@ function listScreen({ rows, now, onOpen, onNav, onAdd }) {
     bottomNav('list', onNav));
 }
 
-/** entries: engagements newest first; names: id → name */
-function historyScreen({ entries, names, now, onOpen, onNav }) {
+/**
+ * Every logged catch-up, newest first, grouped by month. `filterId` limits it
+ * to one person; `people` ([{id, name}], A–Z) fills the filter. Tapping a row
+ * opens it for editing.
+ */
+function historyScreen({ entries, names, people, filterId = null, now, onFilter, onEdit, onNav }) {
+  const shown = filterId ? entries.filter((e) => e.contactId === filterId) : entries;
+  const who = filterId ? names[filterId] : null;
+  const filter = h('select', {
+    class: 'input history-filter', 'aria-label': 'Show catch-ups with',
+    onchange: (e) => onFilter(e.target.value || null),
+  },
+  h('option', { value: '' }, 'Everyone'),
+  people.map((p) => h('option', { value: p.id, selected: p.id === filterId }, p.name)));
+  const count = `${shown.length} ${shown.length === 1 ? 'catch-up' : 'catch-ups'}${who ? ` with ${who}` : ''}`;
+
+  const row = (e) => {
+    const t = engagementType(e.type);
+    const name = names[e.contactId] ?? 'Removed';
+    return h('li', {}, h('button', {
+      class: 'history-row wide', onclick: () => onEdit(e.id),
+      'aria-label': `${name}, ${t.label}, ${historyDate(e.loggedAt, now)}. Edit`,
+    },
+    h('span', { class: 'history-icon' }, icon(e.type, { size: 15 })),
+    h('span', { class: 'history-label' }, who ? t.label : [h('strong', {}, name), ` · ${t.label}`]),
+    h('span', { class: 'history-date' }, historyDate(e.loggedAt, now))));
+  };
+
   return h('section', { class: 'page with-nav' },
     h('header', { class: 'page-header' }, h('h1', { class: 'canvas-title' }, 'History')),
     h('div', { class: 'page-scroll' },
       entries.length === 0
         ? h('p', { class: 'body-secondary center pad' }, 'No catch-ups logged yet.')
-        : h('ul', { class: 'history' }, entries.slice(0, 100).map((e) => {
-          const t = engagementType(e.type);
-          return h('li', {}, h('button', { class: 'history-row wide', onclick: () => onOpen(e.contactId) },
-            h('span', { class: 'history-icon' }, icon(e.type, { size: 15 })),
-            h('span', { class: 'history-label' }, h('strong', {}, names[e.contactId] ?? 'Removed'), ` · ${t.label}`),
-            h('span', { class: 'history-date' }, historyDate(e.loggedAt, now))));
-        }))),
+        : [
+          h('div', { class: 'history-toolbar' }, filter,
+            h('span', { class: 'history-count', 'aria-live': 'polite' }, count)),
+          ...(shown.length === 0
+            ? [h('p', { class: 'body-secondary center pad' }, `No catch-ups with ${who ?? 'them'} yet.`)]
+            : groupByMonth(shown, now).map((g) => h('section', { class: 'history-month' },
+              h('h2', { class: 'month-title' }, g.title),
+              h('ul', { class: 'history' }, g.entries.map(row))))),
+        ]),
     bottomNav('history', onNav));
 }
 
@@ -2411,7 +2621,8 @@ __modules["src/main.js"] = (() => {
 //   #/add         add contact
 //   #/contact/:id orbit canvas with the detail sheet open (deep link)
 //   #/contact/:id/edit  edit that contact's name, cadence and note
-//   #/list, #/history, #/settings  (Sprint 2 surfaces, prototyped here)
+//   #/list, #/settings  (Sprint 2 surfaces, prototyped here)
+//   #/history     every catch-up; #/history/:id only that person's
 const { createRepository, localStorageAdapter, newId, parseBackup } = __modules["src/data/repository.js"];
 const { seedDemo } = __modules["src/data/demo.js"];
 const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/health.js"];
@@ -2419,7 +2630,7 @@ const { engagementType } = __modules["src/domain/engagement.js"];
 const { separatePhases, toOrbitData } = __modules["src/domain/layout.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
-const { detailSheet, logSheet, confirmDialog, importDialog } = __modules["src/ui/detailSheet.js"];
+const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet } = __modules["src/ui/detailSheet.js"];
 const { onboardingScreen, addContactScreen, listScreen, historyScreen, settingsScreen } = __modules["src/ui/screens.js"];
 const { h } = __modules["src/ui/dom.js"];
 const { startUpdates } = __modules["src/ui/updates.js"];
@@ -2497,12 +2708,16 @@ function parseRoute() {
   if (m) return { name: 'contact', id: decodeURIComponent(m[1]) };
   const edit = path.match(/^\/contact\/([^/]+)\/edit$/);
   if (edit) return { name: 'edit', id: decodeURIComponent(edit[1]) };
+  const hist = path.match(/^\/history\/([^/]+)$/);
+  if (hist) return { name: 'history', id: decodeURIComponent(hist[1]) };
   return { name: { '/': 'orbit', '/onboarding': 'onboarding', '/add': 'add', '/list': 'list',
     '/history': 'history', '/settings': 'settings' }[path] ?? 'orbit' };
 }
 
 let animateSheet = true;
-let overlay = null; // transient modal state: 'log' | 'delete' (contact route), 'import' (settings)
+let overlay = null; // transient modal state: 'log' | 'delete' (contact route), 'import' (settings),
+//                     'engagement' | 'deleteEngagement' (history, for `editingId`)
+let editingId = null; // the catch-up open for editing on History
 let pendingImport = null; // a checked backup waiting for Merge/Replace
 
 function render() {
@@ -2565,10 +2780,18 @@ function renderPage(route, now) {
         now, onOpen: (id) => go(`/contact/${id}`), onNav: navTo, onAdd: () => go('/add'),
       });
     case 'history': {
-      const names = Object.fromEntries(repo.getAll().map((c) => [c.id, c.name]));
+      const contacts = repo.getAll();
+      const names = Object.fromEntries(contacts.map((c) => [c.id, c.name]));
+      const entries = repo.getEngagementHistory();
+      const logged = new Set(entries.map((e) => e.contactId));
+      const people = contacts.filter((c) => logged.has(c.id) || c.id === route.id) // keep the filtered person listed
+        .sort((a, b) => a.name.localeCompare(b.name)).map(({ id, name }) => ({ id, name }));
       return historyScreen({
-        entries: repo.getEngagementHistory(), names, now,
-        onOpen: (id) => names[id] && go(`/contact/${id}`), onNav: navTo,
+        entries, names, people, now,
+        filterId: route.id && names[route.id] ? route.id : null,
+        onFilter: (id) => go(id ? `/history/${encodeURIComponent(id)}` : '/history'),
+        onEdit: (id) => { editingId = id; overlay = 'engagement'; render(); },
+        onNav: navTo,
       });
     }
     case 'settings':
@@ -2626,7 +2849,10 @@ function renderOverlays(route, now) {
       onCancel: close, onMerge: () => apply('merge'), onReplace: () => apply('replace'),
     })];
   }
-  if (route.name !== 'contact') { overlay = null; pendingImport = null; return []; }
+  if (route.name === 'history' && editingId && (overlay === 'engagement' || overlay === 'deleteEngagement')) {
+    return historyOverlay(now);
+  }
+  if (route.name !== 'contact') { overlay = null; pendingImport = null; editingId = null; return []; }
   const contact = repo.getById(route.id);
   const close = () => { overlay = null; go('/'); };
   const detail = contact && {
@@ -2641,6 +2867,7 @@ function renderOverlays(route, now) {
     onLog: () => { overlay = 'log'; render(); },
     onEdit: () => go(`/contact/${encodeURIComponent(contact.id)}/edit`),
     onDelete: () => { overlay = 'delete'; render(); },
+    onHistory: () => go(`/history/${encodeURIComponent(contact.id)}`),
   })];
   // Only a freshly opened route slides the sheet in; in-route re-renders
   // (logging, cancelling a dialog) show it in place.
@@ -2671,8 +2898,42 @@ function renderOverlays(route, now) {
   return layers;
 }
 
+/** The edit sheet for a logged catch-up on History, or its delete confirmation. */
+function historyOverlay(now) {
+  const engagement = repo.getEngagementHistory().find((e) => e.id === editingId);
+  const close = () => { overlay = null; editingId = null; render(); };
+  if (!engagement) { overlay = null; editingId = null; return []; }
+  const contact = repo.getById(engagement.contactId);
+  const name = contact?.name ?? 'Removed';
+  if (overlay === 'deleteEngagement') {
+    return [confirmDialog({
+      title: 'Delete this catch-up?',
+      body: `${engagementType(engagement.type).label} with ${name} will be removed from the history.`,
+      confirm: 'Delete',
+      onCancel: () => { overlay = 'engagement'; render(); },
+      onConfirm: () => {
+        overlay = null; editingId = null;
+        repo.deleteEngagement(engagement.id);
+        toast('Catch-up deleted');
+      },
+    })];
+  }
+  return [editEngagementSheet({
+    engagement, name, now,
+    onClose: close,
+    onSave: (changes) => {
+      overlay = null; editingId = null;
+      repo.updateEngagement(engagement.id, changes);
+      toast('Catch-up updated');
+    },
+    onDelete: () => { overlay = 'deleteEngagement'; render(); },
+    onOpenContact: () => { overlay = null; editingId = null; if (contact) go(`/contact/${encodeURIComponent(contact.id)}`); else render(); },
+  })];
+}
+
 window.addEventListener('hashchange', () => {
   overlay = null;
+  editingId = null;
   animateSheet = true;
   render();
 });
