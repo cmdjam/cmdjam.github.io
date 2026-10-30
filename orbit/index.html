@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.4.0 (6d699c2606b4)">
+  <meta name="app-version" content="1.5.0 (5d63f0373d47)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -856,6 +856,191 @@ function createRepository(storage = memoryStorage()) {
   };
 }
 return { BACKUP_APP, BACKUP_SCHEMA, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
+})();
+
+// ── src/data/idbStorage.js ────────────────────────────────────────────────
+__modules["src/data/idbStorage.js"] = (() => {
+// IndexedDB storage adapter for the repository, with the one-time move of the
+// old localStorage data (`orbit.v1`) into it.
+//
+// The repository is synchronous: it calls `load()` once and `save(state)` on
+// every change. IndexedDB is asynchronous, so `openStorage()` reads the whole
+// state before the app starts, hands the repository an adapter whose `load()`
+// returns that snapshot, and queues every save as a put in write order.
+//
+// Migration: when the database has no state yet but `orbit.v1` exists, the
+// old data is written to IndexedDB and read back. Only when the read-back
+// matches is `orbit.v1` removed; on any failure the copy is deleted from
+// IndexedDB again (so it can never later win over newer localStorage edits), the
+// old key is left alone and the app keeps using localStorage, as before. The
+// same happens when IndexedDB takes too long to open (OPEN_TIMEOUT_MS): some
+// webviews and private modes never answer, and the app must still start.
+//
+// Once IndexedDB has opened in this browser, `localStorage['orbit.storage']`
+// is set to 'indexeddb'. From then on the data lives there, so falling back to
+// localStorage would show an empty orbit and split later edits off where the
+// next load ignores them. Instead such a browser waits for IndexedDB with no
+// time limit, and if it fails outright the session runs in memory, with
+// `onError` saying that changes won't be saved.
+const { localStorageAdapter, memoryStorage } = __modules["src/data/repository.js"];
+
+const IDB_NAME = 'orbit';
+const IDB_STORE = 'state';
+const IDB_KEY = 'v1';
+const LEGACY_KEY = 'orbit.v1';
+const OPEN_TIMEOUT_MS = 4000;
+const MARKER_KEY = 'orbit.storage';
+
+const req = (r) => new Promise((resolve, reject) => {
+  r.onsuccess = () => resolve(r.result);
+  r.onerror = () => reject(r.error);
+});
+
+/**
+ * Opens the database and resolves to a small async key-value store over its
+ * one object store. Rejects when IndexedDB is missing or refuses to open
+ * (some private windows, some file:// pages).
+ */
+function idbKeyValue(factory = globalThis.indexedDB, name = IDB_NAME) {
+  if (!factory) return Promise.reject(new Error('IndexedDB is not available'));
+  return new Promise((resolve, reject) => {
+    const open = factory.open(name, 1);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains(IDB_STORE)) open.result.createObjectStore(IDB_STORE);
+    };
+    open.onblocked = () => reject(new Error('IndexedDB is blocked'));
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      // Another tab upgrading the database later: let it, and stop writing here.
+      db.onversionchange = () => db.close();
+      const tx = (mode) => db.transaction(IDB_STORE, mode).objectStore(IDB_STORE);
+      const write = (fn) => new Promise((done, fail) => {
+        const t = db.transaction(IDB_STORE, 'readwrite');
+        fn(t.objectStore(IDB_STORE));
+        t.oncomplete = () => done();
+        t.onerror = () => fail(t.error);
+        t.onabort = () => fail(t.error ?? new Error('IndexedDB write aborted'));
+      });
+      resolve({
+        get: (key) => req(tx('readonly').get(key)),
+        put: (key, value) => write((store) => store.put(value, key)),
+        delete: (key) => write((store) => store.delete(key)),
+      });
+    };
+  });
+}
+
+/** Guarded access to the old localStorage key. Private windows may throw. */
+function legacyStore(key = LEGACY_KEY, ls = globalThis.localStorage) {
+  return {
+    get() { try { return ls?.getItem(key) ?? null; } catch { return null; } },
+    remove() { try { ls?.removeItem(key); } catch { /* the copy stays; IndexedDB wins on load */ } },
+  };
+}
+
+/** Guarded access to the marker saying this browser's data lives in IndexedDB. */
+function storageMarker(ls = globalThis.localStorage) {
+  return {
+    isSet() { try { return ls?.getItem(MARKER_KEY) === 'indexeddb'; } catch { return false; } },
+    set() { try { ls?.setItem(MARKER_KEY, 'indexeddb'); } catch { /* a later fallback may then split; nothing better to do */ } },
+  };
+}
+
+/**
+ * Reads the state from `kv`, first moving the legacy copy into it if `kv` is
+ * empty. Resolves to `{ state, source }`, where source is 'idb' (already
+ * there), 'migrated' (just moved) or 'empty' (nothing anywhere). Throws when
+ * a move could not be confirmed; the legacy copy is then untouched and the
+ * unconfirmed copy is deleted from `kv` (best effort). `live()` is checked
+ * before writing and before removing the legacy key: once it returns false
+ * (openStorage gave up waiting), the move is abandoned the same way.
+ *
+ * A legacy value that is not valid JSON is left in place and not migrated,
+ * which matches the old adapter: it loaded as no data.
+ */
+async function loadWithMigration(kv, legacy, live = () => true) {
+  const existing = await kv.get(IDB_KEY);
+  if (existing != null) return { state: existing, source: 'idb' };
+
+  const raw = legacy.get();
+  let state = null;
+  try { state = raw == null ? null : JSON.parse(raw); } catch { state = null; }
+  if (state == null || typeof state !== 'object') return { state: null, source: 'empty' };
+
+  if (!live()) throw new Error('Gave up waiting for IndexedDB');
+  const abandon = async (error) => {
+    try { await kv.delete(IDB_KEY); } catch { /* nothing more to do */ }
+    throw error;
+  };
+  await kv.put(IDB_KEY, state);
+  let back;
+  try { back = await kv.get(IDB_KEY); } catch (e) { return abandon(e); }
+  if (JSON.stringify(back) !== JSON.stringify(state)) {
+    return abandon(new Error('The migrated data did not read back the same'));
+  }
+  if (!live()) return abandon(new Error('Gave up waiting for IndexedDB'));
+  legacy.remove();
+  return { state: back, source: 'migrated' };
+}
+
+/**
+ * Synchronous repository adapter over an async `kv`. `load()` returns the
+ * snapshot read at startup; `save()` queues a put, so writes land in order.
+ * `onError` is called when a write fails. `flush()` resolves once every
+ * queued write has finished (for tests).
+ */
+function cachedKvStorage(kv, initial, onError = () => {}) {
+  let chain = Promise.resolve();
+  return {
+    load: () => initial,
+    save(state) {
+      chain = chain.then(() => kv.put(IDB_KEY, state)).catch((e) => onError(e));
+    },
+    flush: () => chain,
+  };
+}
+
+/**
+ * The storage the app runs on: IndexedDB when it opens and migrates cleanly,
+ * otherwise the old localStorage adapter (so nothing changes for a browser
+ * without working IndexedDB, or one whose IndexedDB doesn't answer within
+ * `timeoutMs`). A browser whose data already moved to IndexedDB (the marker
+ * is set) waits without a time limit and, if IndexedDB fails, gets an unsaved
+ * in-memory session and an `onError` call instead. Never rejects.
+ */
+async function openStorage({
+  indexedDB = globalThis.indexedDB, localStorage = globalThis.localStorage, onError,
+  timeoutMs = OPEN_TIMEOUT_MS,
+} = {}) {
+  const marker = storageMarker(localStorage);
+  const moved = marker.isSet();
+  let gaveUp = false;
+  let timer;
+  const attempt = (async () => {
+    const kv = await idbKeyValue(indexedDB);
+    const { state } = await loadWithMigration(kv, legacyStore(LEGACY_KEY, localStorage), () => !gaveUp);
+    // Saves go to IndexedDB from here on; not if this session already fell back to localStorage.
+    if (!gaveUp) marker.set();
+    return cachedKvStorage(kv, state, onError);
+  })();
+  attempt.catch(() => {}); // a late failure after the timeout has nobody to tell
+  const timeout = moved ? new Promise(() => {}) : new Promise((resolve) => {
+    timer = setTimeout(() => { gaveUp = true; resolve(null); }, timeoutMs);
+  });
+  try {
+    const storage = await Promise.race([attempt, timeout]);
+    if (storage) return storage;
+  } catch { /* fall through */ } finally {
+    clearTimeout(timer);
+  }
+  if (moved) {
+    onError?.(new Error('IndexedDB did not open'));
+    return memoryStorage();
+  }
+  return localStorageAdapter(LEGACY_KEY);
+}
+return { IDB_NAME, IDB_STORE, IDB_KEY, LEGACY_KEY, OPEN_TIMEOUT_MS, MARKER_KEY, idbKeyValue, legacyStore, storageMarker, loadWithMigration, cachedKvStorage, openStorage };
 })();
 
 // ── src/data/demo.js ──────────────────────────────────────────────────────
@@ -2623,7 +2808,8 @@ __modules["src/main.js"] = (() => {
 //   #/contact/:id/edit  edit that contact's name, cadence and note
 //   #/list, #/settings  (Sprint 2 surfaces, prototyped here)
 //   #/history     every catch-up; #/history/:id only that person's
-const { createRepository, localStorageAdapter, newId, parseBackup } = __modules["src/data/repository.js"];
+const { createRepository, newId, parseBackup } = __modules["src/data/repository.js"];
+const { openStorage } = __modules["src/data/idbStorage.js"];
 const { seedDemo } = __modules["src/data/demo.js"];
 const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
@@ -2644,7 +2830,9 @@ const pref = {
   del: (k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } },
 };
 
-const repo = createRepository(localStorageAdapter());
+// Set once storage has opened (see the end of this file). IndexedDB is async,
+// so nothing reads people or history before then.
+let repo = null;
 const app = document.getElementById('app');
 const go = (path) => { location.hash = path; };
 
@@ -2671,7 +2859,7 @@ const orbit = createOrbitScreen({
   onAdd: () => go('/add'),
   onSettings: () => go('/settings'),
   onNav: navTo,
-  onSeedDemo: () => seedDemo(repo),
+  onSeedDemo: () => { if (repo) seedDemo(repo); },
 });
 orbit.setSpecGeometry(pref.get(SPEC_GEOMETRY_KEY) === '1');
 const loadPlanetStyle = () => {
@@ -2698,8 +2886,6 @@ function refreshOrbit(contacts = repo.getAll()) {
     moons: repo.getEngagementHistory(c.id).filter((e) => e.loggedAt >= recentSince).length,
   }))), HEALTH_LABELS);
 }
-// Re-evaluate periodically so the SA-001 24h grace period lapses on its own.
-setInterval(() => refreshOrbit(), 60_000);
 
 // ── Router ────────────────────────────────────────────────────────────────
 function parseRoute() {
@@ -2721,6 +2907,7 @@ let editingId = null; // the catch-up open for editing on History
 let pendingImport = null; // a checked backup waiting for Merge/Replace
 
 function render() {
+  if (!repo) return; // storage still opening; the first watchAll call renders
   const route = parseRoute();
   if (route.name === 'orbit' && !pref.get(ONBOARDING_KEY)) return go('/onboarding');
 
@@ -2945,8 +3132,15 @@ window.addEventListener('keydown', (e) => {
   else if (['add', 'settings'].includes(route.name)) go('/');
 });
 
-// Fires immediately (initial render) and again after every write.
-repo.watchAll((contacts) => { refreshOrbit(contacts); render(); });
+// IndexedDB, moving the old localStorage data across on first run; localStorage
+// when IndexedDB is unavailable. watchAll fires immediately (the first render)
+// and again after every write.
+openStorage({ onError: () => toast('Could not save changes in this browser') }).then((storage) => {
+  repo = createRepository(storage);
+  repo.watchAll((contacts) => { refreshOrbit(contacts); render(); });
+  // Re-evaluate periodically so the SA-001 24h grace period lapses on its own.
+  setInterval(() => refreshOrbit(), 60_000);
+});
 
 // Offline support for the deployed app (see sw.js) and the update banner. Opened from file:// or
 // content:// there is nothing to cache, and from /src/ during development there is no sw.js.
