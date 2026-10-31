@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.5.0 (5d63f0373d47)">
+  <meta name="app-version" content="1.6.0 (885cc675bc7e)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -327,6 +327,18 @@ h1, h2, h3, p { margin: 0; }
 .onboarding-actions { display: grid; justify-items: center; }
 
 /* People */
+.people-tools { display: grid; gap: 10px; margin-bottom: 16px; }
+.people-search { position: relative; display: flex; align-items: center; }
+.people-search > .icon-search { position: absolute; left: 14px; color: var(--text-secondary); pointer-events: none; display: flex; }
+.people-search-input { padding-left: 42px; padding-right: 48px; min-height: 48px; }
+/* Our own clear button replaces the WebKit one, so every browser gets the same control. */
+.people-search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.search-clear {
+  position: absolute; right: 0; width: 48px; height: 48px; display: grid; place-items: center;
+  color: var(--text-secondary); border-radius: 14px;
+}
+.search-clear:hover { color: var(--text-primary); }
+.people-empty { display: grid; justify-items: center; gap: 2px; padding: 32px 0; text-align: center; }
 .people-group + .people-group { margin-top: 18px; }
 .group-title {
   display: flex; align-items: center; gap: 8px; margin-bottom: 2px;
@@ -1761,6 +1773,8 @@ const PATHS = {
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4h4"/><path d="M12 7.5V12l3 2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   message: '<path d="M4 5.5h16v10H9l-5 4z"/>',
@@ -2469,6 +2483,41 @@ function editEngagementSheet({ engagement, name, now, onSave, onDelete, onOpenCo
 return { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet };
 })();
 
+// ── src/domain/people.js ──────────────────────────────────────────────────
+__modules["src/domain/people.js"] = (() => {
+// People screen search and health filter. Pure and DOM-free, so it can be tested in Node.
+
+/** The People chips. Overdue covers both Long overdue (estranged) and Overdue (neglected). */
+const PEOPLE_FILTERS = Object.freeze([
+  { id: 'all', label: 'All', states: null },
+  { id: 'overdue', label: 'Overdue', states: ['estranged', 'neglected'] },
+  { id: 'due', label: 'Due soon', states: ['drifting'] },
+  { id: 'ontrack', label: 'On track', states: ['thriving'] },
+]);
+
+/** Lower-case and strip accents, so "Zoë" and "ZOE" both fold to "zoe". */
+function foldText(s) {
+  return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
+/** Does `contact` match the search `query` on name or note? An empty query matches everyone. */
+function matchesQuery(contact, query) {
+  const q = foldText(query).trim();
+  if (q === '') return true;
+  return foldText(contact.name).includes(q) || foldText(contact.note).includes(q);
+}
+
+/**
+ * rows: [{contact, healthState, ...}]. Keeps the rows that match both the
+ * search `query` and the chip `filter` (a PEOPLE_FILTERS id; unknown → all).
+ */
+function filterPeople(rows, { query = '', filter = 'all' } = {}) {
+  const states = PEOPLE_FILTERS.find((f) => f.id === filter)?.states ?? null;
+  return rows.filter((r) => (!states || states.includes(r.healthState)) && matchesQuery(r.contact, query));
+}
+return { PEOPLE_FILTERS, foldText, matchesQuery, filterPeople };
+})();
+
 // ── src/ui/screens.js ─────────────────────────────────────────────────────
 __modules["src/ui/screens.js"] = (() => {
 // Full-screen pages: onboarding, add contact, list, history, settings.
@@ -2479,6 +2528,7 @@ const { HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { toOrbitData } = __modules["src/domain/layout.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
 const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate, groupByMonth } = __modules["src/domain/format.js"];
+const { PEOPLE_FILTERS, filterPeople } = __modules["src/domain/people.js"];
 
 // Illustrative planets for the onboarding backdrop — one per health state.
 const ONBOARDING_PLANETS = [
@@ -2614,15 +2664,14 @@ const GROUPS = [
   ['thriving', 'On track'],
 ];
 
-/** rows: [{contact, healthState, ratio}] */
-function listScreen({ rows, now, onOpen, onNav, onAdd }) {
-  // Most urgent first; within a group, furthest past cadence first.
-  const sections = GROUPS.map(([state, title]) => ({
-    state, title,
-    rows: rows.filter((r) => r.healthState === state)
-      .sort((a, b) => (b.ratio ?? Infinity) - (a.ratio ?? Infinity) ||
-        a.contact.name.localeCompare(b.contact.name)),
-  })).filter((g) => g.rows.length > 0);
+/**
+ * rows: [{contact, healthState, ratio}]. `search` ({query, filter}) is the
+ * live search and chip filter; onSearch gets each change so main.js can keep
+ * it across re-renders while People stays open. Typing only rebuilds the
+ * results, never the field, so focus and caret stay put.
+ */
+function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch, onOpen, onNav, onAdd }) {
+  let { query, filter } = search;
 
   const row = ({ contact, healthState, ratio }) => h('li', {},
     h('button', { class: 'person-row', onclick: () => onOpen(contact.id) },
@@ -2635,17 +2684,81 @@ function listScreen({ rows, now, onOpen, onNav, onAdd }) {
         rhythmMeter(ratio, healthState, { compact: true }),
         h('span', { class: 'person-sub' }, cadenceLabel(contact.cadenceDays)))));
 
+  const input = h('input', {
+    class: 'input people-search-input', type: 'search', placeholder: 'Search people',
+    'aria-label': 'Search people', autocomplete: 'off', enterkeyhint: 'search', value: query,
+  });
+  const clearButton = h('button', {
+    class: 'search-clear', type: 'button', 'aria-label': 'Clear search', hidden: query === '',
+    onclick: () => clearSearch(),
+  }, icon('close', { size: 16 }));
+  const chips = PEOPLE_FILTERS.map((f) => h('button', {
+    class: 'chip', type: 'button', 'data-filter': f.id,
+    onclick: () => { filter = f.id; update(); },
+  }, f.label));
+  const status = h('p', { class: 'sr-only', role: 'status' });
+  const results = h('div', { class: 'people-results' });
+
+  function clearSearch() {
+    query = '';
+    input.value = '';
+    update();
+    input.focus();
+  }
+
+  function update() {
+    onSearch?.({ query, filter });
+    clearButton.hidden = query === '';
+    chips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.filter === filter)));
+    const shown = filterPeople(rows, { query, filter });
+    // Most urgent first; within a group, furthest past cadence first.
+    const sections = GROUPS.map(([state, title]) => ({
+      state, title,
+      rows: shown.filter((r) => r.healthState === state)
+        .sort((a, b) => (b.ratio ?? Infinity) - (a.ratio ?? Infinity) ||
+          a.contact.name.localeCompare(b.contact.name)),
+    })).filter((g) => g.rows.length > 0);
+    const chip = PEOPLE_FILTERS.find((f) => f.id === filter);
+    status.textContent = shown.length === rows.length ? ''
+      : `${shown.length} of ${rows.length} ${rows.length === 1 ? 'person' : 'people'}`;
+    results.replaceChildren(...(sections.length > 0
+      ? sections.map((g) => h('section', { class: 'people-group' },
+        h('h2', { class: `group-title h-${g.state}` },
+          h('span', { class: 'dot', 'aria-hidden': 'true' }), g.title,
+          h('span', { class: 'group-count' }, g.rows.length)),
+        h('ul', { class: 'people-list' }, g.rows.map(row))))
+      : query.trim() !== ''
+        ? [h('div', { class: 'people-empty' },
+          h('p', { class: 'body-secondary' }, `Nobody matches “${query.trim()}”`),
+          h('button', { class: 'link-button', type: 'button', onclick: clearSearch }, 'Clear'))]
+        : [h('div', { class: 'people-empty' },
+          h('p', { class: 'body-secondary' }, `Nobody is ${chip.label.toLowerCase()} right now.`),
+          h('button', {
+            class: 'link-button', type: 'button',
+            onclick: () => { filter = 'all'; update(); chips[0].focus(); },
+          }, 'Show everyone'))]));
+  }
+
+  input.addEventListener('input', () => { query = input.value; update(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && input.value !== '') { e.preventDefault(); e.stopPropagation(); clearSearch(); }
+  });
+  if (rows.length > 0) update();
+
   return h('section', { class: 'page with-nav' },
     h('header', { class: 'page-header' }, h('h1', { class: 'canvas-title' }, 'People'),
       h('button', { class: 'icon-button', 'aria-label': 'Add to orbit', onclick: onAdd }, icon('plus', { size: 18 }))),
     h('div', { class: 'page-scroll' },
-      sections.length === 0
+      rows.length === 0
         ? h('p', { class: 'body-secondary center pad' }, 'Nobody here yet.')
-        : sections.map((g) => h('section', { class: 'people-group' },
-          h('h2', { class: `group-title h-${g.state}` },
-            h('span', { class: 'dot', 'aria-hidden': 'true' }), g.title,
-            h('span', { class: 'group-count' }, g.rows.length)),
-          h('ul', { class: 'people-list' }, g.rows.map(row))))),
+        : [
+          h('div', { class: 'people-tools' },
+            h('div', { class: 'people-search' },
+              icon('search', { size: 18 }), input, clearButton),
+            h('div', { class: 'chips people-filter', role: 'group', 'aria-label': 'Show' }, chips),
+            status),
+          results,
+        ]),
     bottomNav('list', onNav));
 }
 
@@ -2905,6 +3018,8 @@ let overlay = null; // transient modal state: 'log' | 'delete' (contact route), 
 //                     'engagement' | 'deleteEngagement' (history, for `editingId`)
 let editingId = null; // the catch-up open for editing on History
 let pendingImport = null; // a checked backup waiting for Merge/Replace
+const NO_PEOPLE_SEARCH = { query: '', filter: 'all' };
+let peopleSearch = NO_PEOPLE_SEARCH; // People search + chip filter; never saved, reset on leaving People
 
 function render() {
   if (!repo) return; // storage still opening; the first watchAll call renders
@@ -2912,8 +3027,14 @@ function render() {
   if (route.name === 'orbit' && !pref.get(ONBOARDING_KEY)) return go('/onboarding');
 
   const now = Date.now();
+  if (route.name !== 'list') peopleSearch = NO_PEOPLE_SEARCH;
+  // A re-render while typing in the People search (say, a write from another tab) keeps focus and caret.
+  const typing = document.activeElement?.classList?.contains('people-search-input')
+    ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const page = renderPage(route, now);
   pageLayer.replaceChildren(...(page ? [page] : []));
+  const search = typing && pageLayer.querySelector('.people-search-input');
+  if (search) { search.focus({ preventScroll: true }); search.setSelectionRange(...typing); }
   orbit.el.inert = !!page;
   orbit.el.setAttribute('aria-hidden', String(!!page));
 
@@ -2964,7 +3085,8 @@ function renderPage(route, now) {
     case 'list':
       return listScreen({
         rows: repo.getAll().map((c) => ({ contact: c, healthState: healthOf(c, now), ratio: ratioOf(c, now) })),
-        now, onOpen: (id) => go(`/contact/${id}`), onNav: navTo, onAdd: () => go('/add'),
+        now, search: peopleSearch, onSearch: (next) => { peopleSearch = next; },
+        onOpen: (id) => go(`/contact/${id}`), onNav: navTo, onAdd: () => go('/add'),
       });
     case 'history': {
       const contacts = repo.getAll();
