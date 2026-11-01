@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.8.0 (48400e11dcc5)">
+  <meta name="app-version" content="1.9.0 (fd927e4935b7)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -371,7 +371,15 @@ h1, h2, h3, p { margin: 0; }
 .person-name { font-weight: 500; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person-when { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 .person-sub { font-size: 12px; color: var(--text-secondary); }
-.settings-list { margin-top: 16px; }
+.settings-group { margin-top: 24px; }
+.settings-group-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-secondary); margin: 0 0 2px;
+}
+.settings-group-note { margin: 2px 0 0; }
+.settings-list { margin-top: 4px; }
+a.settings-row { color: inherit; text-decoration: none; }
+.settings-row > .icon { flex: none; color: var(--text-secondary); }
 .settings-row { cursor: pointer; }
 .settings-row.danger { color: var(--danger); }
 .app-version { margin-top: 24px; text-align: center; font-size: 12px; }
@@ -1579,6 +1587,142 @@ function visiblePlanets(planets, pos, seconds = 0, { reduceMotion = false } = {}
 return { ONBOARDING_STEPS, ONBOARDING_HEALTH_ORDER, PLANET_APPEAR_INTERVAL, ONBOARDING_START, isLastPosition, nextPosition, prevPosition, currentHealthState, visiblePlanets };
 })();
 
+// ── src/domain/format.js ──────────────────────────────────────────────────
+__modules["src/domain/format.js"] = (() => {
+// Port of the ContactDetail label getters. Every function takes `now`
+// explicitly so output is deterministic and testable.
+const { inDays } = __modules["src/domain/health.js"];
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const shortDate = (d) => `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+
+function relativeLastContact(lastEngagedAt, now) {
+  if (lastEngagedAt == null) return 'Never';
+  const days = inDays(lastEngagedAt, now);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return 'Last week';
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks} weeks ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? '' : 's'} ago`;
+}
+
+const relativeLastContactDate = (lastEngagedAt) =>
+  lastEngagedAt == null ? '—' : shortDate(new Date(lastEngagedAt));
+
+function cadenceLabel(d) {
+  if (d === 1) return 'Every day';
+  if (d < 7) return `Every ${d} days`;
+  if (d === 7) return 'Every week';
+  if (d < 14) return `Every ${d} days`;
+  if (d === 14) return 'Every 2 weeks';
+  if (d < 30) return `Every ${Math.round(d / 7)} weeks`;
+  if (d === 30) return 'Every month';
+  return `Every ${Math.round(d / 30)} months`;
+}
+
+function daysRemainingLabel(cadenceDays, lastEngagedAt, now) {
+  if (lastEngagedAt == null) return 'Reach out now';
+  const remaining = cadenceDays - inDays(lastEngagedAt, now);
+  if (remaining <= 0) return 'Overdue';
+  if (remaining === 1) return '1 day remaining';
+  return `${remaining} days remaining`;
+}
+
+/**
+ * Settings → Export backup sub-line, from `orbit.lastExport` (milliseconds as
+ * a string): "Last exported Mar 4", with the year when it isn't this year's,
+ * or "Never exported" when unset or unreadable.
+ */
+function lastExportLabel(stored, now) {
+  const ms = stored == null || stored === '' ? NaN : Number(stored);
+  if (!Number.isFinite(ms) || ms <= 0) return 'Never exported';
+  const d = new Date(ms);
+  const year = d.getFullYear() === new Date(now).getFullYear() ? '' : `, ${d.getFullYear()}`;
+  return `Last exported ${shortDate(d)}${year}`;
+}
+
+/** History row date: Today / Yesterday / N days ago / "Mar 4". */
+function historyDate(loggedAt, now) {
+  const days = inDays(loggedAt, now);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  return shortDate(new Date(loggedAt));
+}
+
+const CADENCE_UNITS = Object.freeze([
+  { id: 'days', days: 1, label: 'Days', one: 'day', many: 'days' },
+  { id: 'weeks', days: 7, label: 'Weeks', one: 'week', many: 'weeks' },
+  { id: 'months', days: 30, label: 'Months', one: 'month', many: 'months' },
+]);
+
+/**
+ * Splits a cadence in days into the stepper number and unit the add/edit form
+ * shows: the largest unit that divides it exactly (210 → 7 months, 14 → 2
+ * weeks, 10 → 10 days).
+ */
+function cadenceParts(days) {
+  const u = [...CADENCE_UNITS].reverse().find((x) => days % x.days === 0) ?? CADENCE_UNITS[0];
+  return { number: days / u.days, unit: u.id };
+}
+
+function cadencePreview(n, unitId) {
+  const u = CADENCE_UNITS.find((x) => x.id === unitId);
+  return `Every ${n} ${n === 1 ? u.one : u.many}`;
+}
+
+const FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** Local calendar day of a timestamp, as 'YYYY-MM-DD' (the value of an <input type="date">). */
+function dateKey(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * The timestamp for a catch-up moved to local day `key`, keeping its time of
+ * day, and never later than `now`. Returns null for a malformed key.
+ */
+function moveToDate(loggedAt, key, now) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key ?? '');
+  if (!m) return null;
+  const t = new Date(loggedAt);
+  const moved = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds());
+  if (moved.getDate() !== Number(m[3])) return null; // e.g. Feb 30
+  return Math.min(moved.getTime(), now);
+}
+
+/**
+ * History entries (newest first) grouped by local month, newest month first:
+ * [{ key: '2026-10', title: 'October 2026', entries }]. The year is left out
+ * for the current year.
+ */
+function groupByMonth(entries, now) {
+  const year = new Date(now).getFullYear();
+  const groups = [];
+  for (const e of entries) {
+    const d = new Date(e.loggedAt);
+    const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+    let g = groups.at(-1);
+    if (!g || g.key !== key) {
+      g = { key, title: FULL_MONTHS[d.getMonth()] + (d.getFullYear() === year ? '' : ` ${d.getFullYear()}`), entries: [] };
+      groups.push(g);
+    }
+    g.entries.push(e);
+  }
+  return groups;
+}
+return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, lastExportLabel, historyDate, CADENCE_UNITS, cadenceParts, cadencePreview, dateKey, moveToDate, groupByMonth };
+})();
+
 // ── src/orbit/colors.js ───────────────────────────────────────────────────
 __modules["src/orbit/colors.js"] = (() => {
 // Health palette, ported from the original Flutter app's app_colors.dart. Plain data so the
@@ -2053,6 +2197,7 @@ const PATHS = {
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
+  chevron: '<path d="M9 5l7 7-7 7"/>',
   message: '<path d="M4 5.5h16v10H9l-5 4z"/>',
   call: '<path d="M6.5 3.5h3l1.5 4-2 1.3a11 11 0 0 0 6.2 6.2l1.3-2 4 1.5v3a2 2 0 0 1-2.2 2A16.5 16.5 0 0 1 4.5 5.7a2 2 0 0 1 2-2.2z"/>',
   coffee: '<path d="M4 9h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5c-.6.8.6 1.7 0 2.5M12 3.5c-.6.8.6 1.7 0 2.5"/>',
@@ -2471,129 +2616,6 @@ function bottomNav(active, onNav) {
     item('orbit', 'orbit', 'Orbit'), item('list', 'list', 'People'), item('history', 'history', 'History'));
 }
 return { startOrbitCanvas, createOrbitScreen, bottomNav };
-})();
-
-// ── src/domain/format.js ──────────────────────────────────────────────────
-__modules["src/domain/format.js"] = (() => {
-// Port of the ContactDetail label getters. Every function takes `now`
-// explicitly so output is deterministic and testable.
-const { inDays } = __modules["src/domain/health.js"];
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-const shortDate = (d) => `${MONTHS[d.getMonth()]} ${d.getDate()}`;
-
-function relativeLastContact(lastEngagedAt, now) {
-  if (lastEngagedAt == null) return 'Never';
-  const days = inDays(lastEngagedAt, now);
-  if (days === 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days} days ago`;
-  if (days < 14) return 'Last week';
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks} weeks ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? '' : 's'} ago`;
-}
-
-const relativeLastContactDate = (lastEngagedAt) =>
-  lastEngagedAt == null ? '—' : shortDate(new Date(lastEngagedAt));
-
-function cadenceLabel(d) {
-  if (d === 1) return 'Every day';
-  if (d < 7) return `Every ${d} days`;
-  if (d === 7) return 'Every week';
-  if (d < 14) return `Every ${d} days`;
-  if (d === 14) return 'Every 2 weeks';
-  if (d < 30) return `Every ${Math.round(d / 7)} weeks`;
-  if (d === 30) return 'Every month';
-  return `Every ${Math.round(d / 30)} months`;
-}
-
-function daysRemainingLabel(cadenceDays, lastEngagedAt, now) {
-  if (lastEngagedAt == null) return 'Reach out now';
-  const remaining = cadenceDays - inDays(lastEngagedAt, now);
-  if (remaining <= 0) return 'Overdue';
-  if (remaining === 1) return '1 day remaining';
-  return `${remaining} days remaining`;
-}
-
-/** History row date: Today / Yesterday / N days ago / "Mar 4". */
-function historyDate(loggedAt, now) {
-  const days = inDays(loggedAt, now);
-  if (days === 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days} days ago`;
-  return shortDate(new Date(loggedAt));
-}
-
-const CADENCE_UNITS = Object.freeze([
-  { id: 'days', days: 1, label: 'Days', one: 'day', many: 'days' },
-  { id: 'weeks', days: 7, label: 'Weeks', one: 'week', many: 'weeks' },
-  { id: 'months', days: 30, label: 'Months', one: 'month', many: 'months' },
-]);
-
-/**
- * Splits a cadence in days into the stepper number and unit the add/edit form
- * shows: the largest unit that divides it exactly (210 → 7 months, 14 → 2
- * weeks, 10 → 10 days).
- */
-function cadenceParts(days) {
-  const u = [...CADENCE_UNITS].reverse().find((x) => days % x.days === 0) ?? CADENCE_UNITS[0];
-  return { number: days / u.days, unit: u.id };
-}
-
-function cadencePreview(n, unitId) {
-  const u = CADENCE_UNITS.find((x) => x.id === unitId);
-  return `Every ${n} ${n === 1 ? u.one : u.many}`;
-}
-
-const FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
-const pad2 = (n) => String(n).padStart(2, '0');
-
-/** Local calendar day of a timestamp, as 'YYYY-MM-DD' (the value of an <input type="date">). */
-function dateKey(ms) {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
-/**
- * The timestamp for a catch-up moved to local day `key`, keeping its time of
- * day, and never later than `now`. Returns null for a malformed key.
- */
-function moveToDate(loggedAt, key, now) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key ?? '');
-  if (!m) return null;
-  const t = new Date(loggedAt);
-  const moved = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
-    t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds());
-  if (moved.getDate() !== Number(m[3])) return null; // e.g. Feb 30
-  return Math.min(moved.getTime(), now);
-}
-
-/**
- * History entries (newest first) grouped by local month, newest month first:
- * [{ key: '2026-10', title: 'October 2026', entries }]. The year is left out
- * for the current year.
- */
-function groupByMonth(entries, now) {
-  const year = new Date(now).getFullYear();
-  const groups = [];
-  for (const e of entries) {
-    const d = new Date(e.loggedAt);
-    const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
-    let g = groups.at(-1);
-    if (!g || g.key !== key) {
-      g = { key, title: FULL_MONTHS[d.getMonth()] + (d.getFullYear() === year ? '' : ` ${d.getFullYear()}`), entries: [] };
-      groups.push(g);
-    }
-    g.entries.push(e);
-  }
-  return groups;
-}
-return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, CADENCE_UNITS, cadenceParts, cadencePreview, dateKey, moveToDate, groupByMonth };
 })();
 
 // ── src/ui/detailSheet.js ─────────────────────────────────────────────────
@@ -3319,13 +3341,19 @@ function historyScreen({ entries, names, people, filterId = null, now, onFilter,
 }
 
 function settingsScreen({
-  onBack, onSeedDemo, onReset, onReplayOnboarding, specGeometry, onToggleSpec, onExport, onImport,
+  onBack, onSeedDemo, onReset, onReplayOnboarding, specGeometry, onToggleSpec, onExport, onImport, lastExport,
 }) {
   // A hidden picker behind a normal button keeps the row keyboard-friendly.
   const picker = h('input', {
     type: 'file', accept: 'application/json,.json', hidden: true, 'aria-hidden': 'true', tabindex: '-1',
     onchange: (e) => { const file = e.target.files?.[0]; e.target.value = ''; if (file) onImport(file); },
   });
+  const row = (title, sub, props) => h('button', { class: 'settings-row', ...props },
+    h('span', { class: 'person-text' }, h('span', {}, title), sub && h('span', { class: 'person-sub' }, sub)));
+  const group = (id, title, note, ...rows) => h('section', { class: 'settings-group', 'aria-labelledby': id },
+    h('h3', { class: 'settings-group-title', id }, title),
+    note && h('p', { class: 'person-sub settings-group-note' }, note),
+    h('div', { class: 'settings-list' }, ...rows));
   return h('section', { class: 'page' },
     h('header', { class: 'page-header' },
       h('button', { class: 'text-button with-icon', onclick: onBack }, icon('back', { size: 18 }), 'Back'),
@@ -3333,26 +3361,27 @@ function settingsScreen({
       h('span', { class: 'spacer' })),
     h('div', { class: 'page-scroll' },
       h('p', { class: 'body-dim' },
-        'Prototype build. Data lives only in this browser (localStorage), so export a backup now and then.'),
-      h('div', { class: 'settings-list' },
+        'Prototype build. Data lives only in this browser, so export a backup now and then.'),
+      group('settings-data', 'Your data', null,
+        row('Export backup', lastExport, { onclick: onExport }),
+        row('Import backup', 'Restore from an Orbit backup file', { onclick: () => picker.click() }),
+        picker,
+        row('Erase all data', 'Remove every person and catch-up from this browser', { class: 'settings-row danger', onclick: onReset })),
+      group('settings-intro', 'Intro', null,
+        row('Replay intro', 'Watch the four-step introduction again', { onclick: onReplayOnboarding })),
+      group('settings-prototype', 'Prototype', 'Developer tools for trying out the design.',
         h('label', { class: 'settings-row' },
           h('span', { class: 'person-text' },
             h('span', {}, 'Compact spec geometry'),
             h('span', { class: 'person-sub' }, 'Draw orbits at the exact design-spec size (radii 40–130px)')),
           h('input', { type: 'checkbox', class: 'switch', checked: specGeometry,
             onchange: (e) => onToggleSpec(e.target.checked) })),
-        h('button', { class: 'settings-row', onclick: onExport },
+        row('Add demo people', 'Fill the orbit with examples of every health state', { onclick: onSeedDemo }),
+        h('a', { class: 'settings-row', href: 'playground.html' },
           h('span', { class: 'person-text' },
-            h('span', {}, 'Export backup'),
-            h('span', { class: 'person-sub' }, 'Download your people and history as a JSON file'))),
-        h('button', { class: 'settings-row', onclick: () => picker.click() },
-          h('span', { class: 'person-text' },
-            h('span', {}, 'Import backup'),
-            h('span', { class: 'person-sub' }, 'Restore from an Orbit backup file'))),
-        picker,
-        h('button', { class: 'settings-row', onclick: onSeedDemo }, 'Add demo people'),
-        h('button', { class: 'settings-row', onclick: onReplayOnboarding }, 'Replay intro'),
-        h('button', { class: 'settings-row danger', onclick: onReset }, 'Erase all data')),
+            h('span', {}, 'Planet Playground'),
+            h('span', { class: 'person-sub' }, 'Tune the planet style live (opens a separate page)')),
+          icon('chevron', { size: 18 }))),
       h('p', { class: 'body-dim app-version' }, `Orbit ${appVersion()}`)));
 }
 
@@ -3439,6 +3468,7 @@ const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/h
 const { engagementType } = __modules["src/domain/engagement.js"];
 const { separatePhases, toOrbitData } = __modules["src/domain/layout.js"];
 const { ONBOARDING_START } = __modules["src/domain/onboarding.js"];
+const { lastExportLabel } = __modules["src/domain/format.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
 const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet } = __modules["src/ui/detailSheet.js"];
@@ -3449,6 +3479,7 @@ const { photoUrls } = __modules["src/ui/photo.js"];
 
 const ONBOARDING_KEY = 'orbit.onboardingShown';
 const SPEC_GEOMETRY_KEY = 'orbit.specGeometry';
+const LAST_EXPORT_KEY = 'orbit.lastExport'; // ms of the last successful Export backup
 const PLANET_STYLE_KEY = 'orbit.planetStyle'; // written by playground.html
 const pref = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -3637,11 +3668,10 @@ function renderPage(route, now) {
       return settingsScreen({
         onBack: () => go('/'),
         onSeedDemo: () => { seedDemo(repo); go('/'); },
-        onReset: () => {
-          if (confirm('Erase all people and history from this browser?')) { repo.reset(); go('/'); }
-        },
+        onReset: () => { overlay = 'erase'; render(); },
         onReplayOnboarding: () => { pref.del(ONBOARDING_KEY); go('/onboarding'); },
         onExport: exportBackup,
+        lastExport: lastExportLabel(pref.get(LAST_EXPORT_KEY), Date.now()),
         onImport: (file) => file.text().then((text) => {
           let backup;
           try { backup = parseBackup(text); } catch (e) { toast(`Import failed: ${e.message}`); return; }
@@ -3674,10 +3704,21 @@ async function exportBackup() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  pref.set(LAST_EXPORT_KEY, String(now));
+  if (parseRoute().name === 'settings') render(); // the "Last exported" sub-line
   toast('Backup downloaded');
 }
 
 function renderOverlays(route, now) {
+  if (route.name === 'settings' && overlay === 'erase') {
+    return [confirmDialog({
+      title: 'Erase all data?',
+      body: 'This permanently removes every person, catch-up and photo from this browser. Export a backup first if you might want them back.',
+      confirm: 'Erase',
+      onCancel: () => { overlay = null; render(); },
+      onConfirm: () => { overlay = null; repo.reset(); go('/'); toast('All data erased'); },
+    })];
+  }
   if (route.name === 'settings' && overlay === 'import' && pendingImport) {
     const close = () => { overlay = null; pendingImport = null; render(); };
     const apply = (mode) => {
