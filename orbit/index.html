@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.7.0 (4226e1d410e6)">
+  <meta name="app-version" content="1.8.0 (48400e11dcc5)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -310,6 +310,7 @@ h1, h2, h3, p { margin: 0; }
 .onboarding-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 62%; z-index: -1;
   -webkit-mask-image: linear-gradient(#000 85%, transparent); mask-image: linear-gradient(#000 85%, transparent); }
 .onboarding-body { text-align: center; }
+.onboarding-card { margin-top: auto; }
 .onboarding-title { font: 400 52px/1 var(--serif); letter-spacing: -0.02em; text-shadow: 0 0 40px rgba(123, 143, 255, 0.35); }
 .onboarding-tagline { margin-top: 12px; font: italic 400 21px/1.3 var(--serif); color: var(--text-secondary); }
 .onboarding-card {
@@ -323,8 +324,22 @@ h1, h2, h3, p { margin: 0; }
   flex: none; width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent);
 }
-.onboarding-legend { justify-content: center; margin: 18px 0 16px; }
-.onboarding-actions { display: grid; justify-items: center; }
+.onboarding-legend { justify-content: center; margin: 14px 0 4px; }
+.onboarding-legend .legend-item.current { color: var(--text-primary); font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+.onboarding-top { position: absolute; top: calc(var(--safe-top) + 4px); right: 12px; }
+.onboarding-progress { display: flex; justify-content: center; gap: 6px; margin-bottom: 14px; }
+.progress-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); transition: width 200ms, background 200ms; }
+.progress-dot.current { width: 18px; border-radius: 3px; background: var(--accent); }
+.onboarding-step { min-height: 132px; }
+.onboarding-step.enter { animation: onboarding-in 320ms ease-out; }
+@keyframes onboarding-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.onboarding-heading { font: 400 24px/1.2 var(--serif); color: var(--text-primary); margin-bottom: 10px; }
+.onboarding-heading.legend-item { display: flex; gap: 10px; font-size: 24px; color: var(--text-primary); }
+.onboarding-heading.legend-item .dot { width: 12px; height: 12px; }
+.onboarding-text { font-size: 14px; line-height: 1.5; color: var(--text-secondary); }
+.onboarding-actions { display: flex; align-items: center; gap: 8px; margin: 14px 0 10px; }
+.onboarding-actions .primary-button { flex: 1; }
+.onboarding-back { flex: none; min-width: 64px; font-size: 14px; }
 
 /* People */
 .people-tools { display: grid; gap: 10px; margin-bottom: 16px; }
@@ -1492,6 +1507,76 @@ function arc(a, b) {
   return Math.min(d, Math.PI - d);
 }
 return { MIN_RADIUS, MAX_RADIUS, radiusForCadence, speedForCadence, sizeForRadius, stablePhase, toOrbitData, MIN_PHASE_GAP, phaseGapFor, separatePhases };
+})();
+
+// ── src/domain/onboarding.js ──────────────────────────────────────────────
+__modules["src/domain/onboarding.js"] = (() => {
+// First-run onboarding sequence (#20): which step is showing and which demo
+// planets the canvas draws at a given moment. Pure and DOM-free, so the
+// screen (src/ui/screens.js) only renders what these functions return.
+
+/** The four steps, in order. */
+const ONBOARDING_STEPS = ['stars', 'planets', 'health', 'start'];
+
+/** Step 3 walks the health states one at a time, in this order. */
+const ONBOARDING_HEALTH_ORDER = ['thriving', 'drifting', 'neglected', 'estranged'];
+
+/** Seconds between demo planets appearing on step 2. */
+const PLANET_APPEAR_INTERVAL = 0.6;
+
+/** The first position: step 1, no health state. */
+const ONBOARDING_START = Object.freeze({ step: 0, state: 0 });
+
+const isLastPosition = (pos) => pos.step === ONBOARDING_STEPS.length - 1;
+
+/**
+ * The position after `pos`: the next health state while on step 3, else the
+ * next step. Returns null past the last step (the sequence is finished).
+ */
+function nextPosition(pos) {
+  if (ONBOARDING_STEPS[pos.step] === 'health' && pos.state < ONBOARDING_HEALTH_ORDER.length - 1) {
+    return { step: pos.step, state: pos.state + 1 };
+  }
+  if (isLastPosition(pos)) return null;
+  return { step: pos.step + 1, state: 0 };
+}
+
+/** The position before `pos` (entering step 3 from behind lands on its last state); null on the first. */
+function prevPosition(pos) {
+  if (ONBOARDING_STEPS[pos.step] === 'health' && pos.state > 0) return { step: pos.step, state: pos.state - 1 };
+  if (pos.step === 0) return null;
+  const step = pos.step - 1;
+  return { step, state: ONBOARDING_STEPS[step] === 'health' ? ONBOARDING_HEALTH_ORDER.length - 1 : 0 };
+}
+
+/** The health state step 3 is showing, or null on the other steps. */
+const currentHealthState = (pos) =>
+  (ONBOARDING_STEPS[pos.step] === 'health' ? ONBOARDING_HEALTH_ORDER[pos.state] : null);
+
+/**
+ * The demo planets visible at `pos`, `seconds` after that position was shown.
+ * - stars: none, only the star field.
+ * - planets: they appear one by one, every PLANET_APPEAR_INTERVAL seconds
+ *   (the first at once); all at once with reduced motion.
+ * - health: only the planets in the current health state.
+ * - start: all of them.
+ */
+function visiblePlanets(planets, pos, seconds = 0, { reduceMotion = false } = {}) {
+  switch (ONBOARDING_STEPS[pos.step]) {
+    case 'stars': return [];
+    case 'planets': {
+      if (reduceMotion) return planets;
+      const n = 1 + Math.floor(Math.max(0, seconds) / PLANET_APPEAR_INTERVAL);
+      return planets.slice(0, Math.min(planets.length, n));
+    }
+    case 'health': {
+      const state = currentHealthState(pos);
+      return planets.filter((p) => p.healthState === state);
+    }
+    default: return planets;
+  }
+}
+return { ONBOARDING_STEPS, ONBOARDING_HEALTH_ORDER, PLANET_APPEAR_INTERVAL, ONBOARDING_START, isLastPosition, nextPosition, prevPosition, currentHealthState, visiblePlanets };
 })();
 
 // ── src/orbit/colors.js ───────────────────────────────────────────────────
@@ -2809,36 +2894,121 @@ const { engagementType } = __modules["src/domain/engagement.js"];
 const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate, groupByMonth } = __modules["src/domain/format.js"];
 const { PEOPLE_FILTERS, filterPeople } = __modules["src/domain/people.js"];
 const { downscalePhoto } = __modules["src/ui/photo.js"];
+const { ONBOARDING_STEPS, ONBOARDING_HEALTH_ORDER, ONBOARDING_START, nextPosition, prevPosition, currentHealthState, visiblePlanets, isLastPosition } = __modules["src/domain/onboarding.js"];
 
-// Illustrative planets for the onboarding backdrop — one per health state.
+// Illustrative planets for the onboarding backdrop, covering every health state.
 const ONBOARDING_PLANETS = [
   ['Mum', 7, 'thriving'], ['Sam', 3, 'thriving'], ['Priya', 14, 'drifting'],
   ['Alex', 30, 'neglected'], ['Theo', 90, 'thriving'], ['Uni friends', 60, 'estranged'],
 ].map(([name, cadenceDays, healthState], i) =>
   ({ ...toOrbitData({ id: `demo-${i}`, name, cadenceDays, healthState }), phase: 0.35 + i * 0.47 }));
 
-function onboardingScreen({ onDone }) {
+const HEALTH_INTRO = {
+  thriving: 'In touch on rhythm: well inside the gap you chose for them.',
+  drifting: 'Getting near your rhythm. A good moment to reach out.',
+  neglected: 'Past your rhythm. They have slipped a little.',
+  estranged: 'Long overdue. Dimmed, but never lost: one catch-up brings them back.',
+};
+
+/**
+ * First-run onboarding (#20): four steps over the demo orbit, from the bare
+ * star field to adding a first contact. Which planets show is decided by the
+ * pure functions in src/domain/onboarding.js. `position` is where to start
+ * (main.js keeps it across re-renders); `onStep` hears every move.
+ */
+function onboardingScreen({ onDone, position = ONBOARDING_START, onStep = () => {} }) {
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  let pos = position;
+  let shownAt = performance.now();
   const canvas = h('canvas', { class: 'onboarding-canvas', 'aria-hidden': 'true' });
-  queueMicrotask(() => startOrbitCanvas(canvas, () => ({ contacts: ONBOARDING_PLANETS, spec: false })));
+  queueMicrotask(() => startOrbitCanvas(canvas, () => ({
+    contacts: visiblePlanets(ONBOARDING_PLANETS, pos, (performance.now() - shownAt) / 1000,
+      { reduceMotion: reduceMotion.matches }),
+    spec: false,
+  })));
+
   const prop = (name, text) => h('li', { class: 'value-prop' },
     h('span', { class: 'value-icon' }, icon(name, { size: 18 })), h('span', {}, text));
-  const state = (s) => h('li', { class: `legend-item h-${s}` },
-    h('span', { class: 'dot', 'aria-hidden': 'true' }), HEALTH_LABELS[s]);
-  return h('section', { class: 'page onboarding' },
+  const hero = h('div', { class: 'onboarding-body' },
+    h('h1', { class: 'onboarding-title' }, 'Orbit'),
+    h('p', { class: 'onboarding-tagline' }, 'The people who matter,', h('br'), 'kept close.'));
+  const progress = h('p', { class: 'onboarding-progress' });
+  // Step changes are announced politely; focus stays on the control that was used.
+  const content = h('div', { class: 'onboarding-step', 'aria-live': 'polite' });
+  const back = h('button', { class: 'link-button onboarding-back', onclick: () => move(prevPosition(pos)) }, 'Back');
+  const next = h('button', { class: 'primary-button', onclick: () => {
+    const to = nextPosition(pos);
+    if (to) move(to); else onDone('add');
+  } });
+
+  const stepContent = () => {
+    switch (ONBOARDING_STEPS[pos.step]) {
+      case 'stars': return [
+        h('h2', { class: 'onboarding-heading' }, 'A sky of your own'),
+        h('p', { class: 'onboarding-text' },
+          'Orbit shows the people you care about as planets circling you. It starts as an empty sky.')];
+      case 'planets': return [
+        h('h2', { class: 'onboarding-heading' }, 'Everyone, in one view'),
+        h('ul', { class: 'value-props' },
+          prop('orbit', 'Each planet is someone you care about'),
+          prop('rhythm', 'Set your own rhythm: closer orbits for people you see often'),
+          prop('check', 'Log a catch-up in seconds — no feeds, no noise'))];
+      case 'health': {
+        const current = currentHealthState(pos);
+        return [
+          h('h2', { class: `onboarding-heading legend-item h-${current}` },
+            h('span', { class: 'dot', 'aria-hidden': 'true' }), HEALTH_LABELS[current]),
+          h('p', { class: 'onboarding-text' }, HEALTH_INTRO[current]),
+          h('ul', { class: 'legend onboarding-legend', 'aria-label': 'Health states' },
+            ONBOARDING_HEALTH_ORDER.map((s) => h('li', {
+              class: `legend-item h-${s}${s === current ? ' current' : ''}`,
+              'aria-current': s === current ? 'step' : null,
+            }, h('span', { class: 'dot', 'aria-hidden': 'true' }), HEALTH_LABELS[s])))];
+      }
+      default: return [
+        h('h2', { class: 'onboarding-heading' }, 'Add your first person'),
+        h('p', { class: 'onboarding-text' }, 'Who do you want to stay close to? Add them and choose how often to catch up.')];
+    }
+  };
+
+  const update = () => {
+    const n = pos.step + 1;
+    const of = ONBOARDING_STEPS.length;
+    el.dataset.step = ONBOARDING_STEPS[pos.step];
+    hero.hidden = pos.step !== 0 && !isLastPosition(pos);
+    progress.replaceChildren(
+      h('span', { class: 'sr-only' }, `Step ${n} of ${of}`),
+      ...ONBOARDING_STEPS.map((_, i) => h('span', { class: `progress-dot${i === pos.step ? ' current' : ''}`, 'aria-hidden': 'true' })));
+    content.replaceChildren(...stepContent());
+    content.classList.remove('enter');
+    void content.offsetWidth; // restart the fade-in
+    content.classList.add('enter');
+    const hideBack = prevPosition(pos) === null;
+    const refocus = hideBack && document.activeElement === back;
+    back.hidden = hideBack;
+    next.textContent = isLastPosition(pos) ? 'Get started' : 'Next';
+    if (refocus) next.focus();
+  };
+
+  const move = (to) => {
+    if (!to) return;
+    pos = to;
+    shownAt = performance.now();
+    onStep(pos);
+    update();
+  };
+
+  const el = h('section', { class: 'page onboarding', 'aria-label': 'Welcome to Orbit' },
     canvas,
-    h('div', { class: 'onboarding-body' },
-      h('h1', { class: 'onboarding-title' }, 'Orbit'),
-      h('p', { class: 'onboarding-tagline' }, 'The people who matter,', h('br'), 'kept close.')),
+    h('div', { class: 'onboarding-top' },
+      h('button', { class: 'link-button onboarding-skip', onclick: () => onDone('orbit') }, 'Skip intro')),
+    hero,
     h('div', { class: 'onboarding-card' },
-      h('ul', { class: 'value-props' },
-        prop('orbit', 'See everyone you care about in one view'),
-        prop('rhythm', 'Set your own rhythm for each relationship'),
-        prop('check', 'Log a catch-up in seconds — no feeds, no noise')),
-      h('ul', { class: 'legend onboarding-legend', 'aria-label': 'Health states' },
-        ['thriving', 'drifting', 'neglected', 'estranged'].map(state)),
-      h('div', { class: 'onboarding-actions' },
-        h('button', { class: 'primary-button', onclick: () => onDone('add') }, 'Get started'),
-        h('button', { class: 'link-button', onclick: () => onDone('orbit') }, 'Skip intro'))));
+      progress,
+      content,
+      h('div', { class: 'onboarding-actions' }, back, next)));
+  update();
+  return el;
 }
 
 const NOTE_MAX = 280;
@@ -3268,6 +3438,7 @@ const { seedDemo } = __modules["src/data/demo.js"];
 const { calculateHealth, cadenceRatio, HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
 const { separatePhases, toOrbitData } = __modules["src/domain/layout.js"];
+const { ONBOARDING_START } = __modules["src/domain/onboarding.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
 const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet } = __modules["src/ui/detailSheet.js"];
@@ -3365,6 +3536,7 @@ let editingId = null; // the catch-up open for editing on History
 let pendingImport = null; // a checked backup waiting for Merge/Replace
 const NO_PEOPLE_SEARCH = { query: '', filter: 'all' };
 let peopleSearch = NO_PEOPLE_SEARCH; // People search + chip filter; never saved, reset on leaving People
+let onboardingPos = ONBOARDING_START; // the intro step; kept across re-renders, reset on leaving the intro
 
 function render() {
   if (!repo) return; // storage still opening; the first watchAll call renders
@@ -3373,6 +3545,7 @@ function render() {
 
   const now = Date.now();
   if (route.name !== 'list') peopleSearch = NO_PEOPLE_SEARCH;
+  if (route.name !== 'onboarding') onboardingPos = ONBOARDING_START;
   // A re-render while typing in the People search (say, a write from another tab) keeps focus and caret.
   const typing = document.activeElement?.classList?.contains('people-search-input')
     ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
@@ -3398,7 +3571,11 @@ function renderPage(route, now) {
   const markShown = () => pref.set(ONBOARDING_KEY, '1');
   switch (route.name) {
     case 'onboarding':
-      return onboardingScreen({ onDone: (next) => { markShown(); go(next === 'add' ? '/add' : '/'); } });
+      return onboardingScreen({
+        position: onboardingPos,
+        onStep: (pos) => { onboardingPos = pos; },
+        onDone: (next) => { markShown(); go(next === 'add' ? '/add' : '/'); },
+      });
     case 'add':
       return addContactScreen({
         onCancel: () => go('/'),

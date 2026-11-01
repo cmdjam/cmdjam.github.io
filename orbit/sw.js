@@ -4,7 +4,7 @@
 // deleted on activate. Each version is served whole, so files from different releases never mix.
 // A new version waits until the page asks it to take over (the "new version" banner, or
 // pull-to-refresh), so a release never swaps out under a page that is still running old code.
-const VERSION = 'orbit-4226e1d410e6';
+const VERSION = 'orbit-48400e11dcc5';
 const ASSETS = [
   './',
   'index.html',
