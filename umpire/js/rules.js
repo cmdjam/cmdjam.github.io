@@ -34,6 +34,14 @@ export function liveStrikes(rule, strikes, t) {
   return ruleStrikes(rule, strikes).filter(s => s.at <= t && expiresAt(s, rule) > t);
 }
 
+// When the next live strike drops off: the soonest expiry among strikes counting at `now`, or
+// null when none are live or the rule's strikes never expire.
+export function nextExpiry(rule, strikes, now) {
+  if (!rule.expiry) return null;
+  const live = liveStrikes(rule, strikes, now);
+  return live.length ? Math.min(...live.map(s => expiresAt(s, rule))) : null;
+}
+
 export function countAt(rule, strikes, t) {
   return liveStrikes(rule, strikes, t).length;
 }

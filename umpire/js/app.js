@@ -4,6 +4,7 @@
 //   #/edit/<id>        edit a rule;  #/new/<childId>  a new rule for a player
 //   #/players          add, rename, recolour, remove players
 //   #/settings         theme, backup (JSON export and import) and the app version
+//   #/board/<childId>  a child's read-only scoreboard (no actions, no links back)
 import * as R from './rules.js';
 import { load, save, normalize, uid, COLOURS } from './store.js';
 import { h, fmtDate, fmtDateTime, localInputValue, plural, strikeMarks, nextLine, callLadder } from './ui.js';
@@ -209,12 +210,37 @@ function boardView() {
       h('div', { class: 'player-head' },
         h('span', { class: 'dot', style: { background: c.colour } }),
         h('h2', null, c.name),
+        h('a', { class: 'btn', href: '#/board/' + c.id, title: `${c.name}'s read-only scoreboard` }, 'Scoreboard'),
         h('a', { class: 'btn', href: '#/new/' + c.id }, '+ Rule'),
       ),
       visible.length ? visible.map(r => ruleCard(r, now)) : h('p', { class: 'muted small' }, 'No rules yet.'),
       archived.length ? h('button', { class: 'link small', onclick: toggle }, showArchived.has(c.id) ? 'Hide archived' : `Show ${plural(archived.length, 'archived rule')}`) : null,
     );
   });
+}
+
+// The child's view: read-only, so no buttons, no links and no Enforce on the ladder.
+function scoreboardView(c) {
+  const now = Date.now();
+  const rules = data.rules.filter(r => r.childId === c.id && !r.archived);
+  return h('div', { class: 'stack scoreboard-view' },
+    h('div', { class: 'player-head' },
+      h('span', { class: 'dot', style: { background: c.colour } }),
+      h('h2', null, c.name),
+    ),
+    rules.length ? rules.map(r => {
+      const st = R.ruleStatus(r, data.strikes, now);
+      const drop = R.nextExpiry(r, data.strikes, now);
+      return h('section', { class: 'card stack' + (st.due.length ? ' rule-card has-due' : '') },
+        h('h2', { class: 'sb-rule' }, r.name),
+        h('div', { class: 'small muted' }, R.describeExpiry(r.expiry)),
+        strikeMarks(st, { big: true }),
+        h('div', { class: 'next' }, `${plural(st.count, 'live strike')} · ${nextLine(st)}`),
+        drop != null ? h('div', { class: 'small muted' }, `Next strike drops off ${fmtDateTime(drop, now)}`) : null,
+        st.calls.length ? callLadder(st) : null,
+      );
+    }) : h('section', { class: 'card empty' }, h('p', { class: 'muted' }, 'No rules right now. Clean sheet!')),
+  );
 }
 
 function ruleView(r) {
@@ -427,7 +453,10 @@ function render() {
   // Re-rendering a form would drop what is being typed, so forms render once per visit.
   if ((view === 'edit' || view === 'new') && app.dataset.route === location.hash) return;
   let out;
-  if (view === 'rule' && rule(id)) out = ruleView(rule(id));
+  const scoreboard = view === 'board' && !!child(id);
+  setScoreboardChrome(scoreboard);
+  if (scoreboard) out = scoreboardView(child(id));
+  else if (view === 'rule' && rule(id)) out = ruleView(rule(id));
   else if (view === 'edit' && rule(id)) out = editView(rule(id));
   else if (view === 'new' && child(id)) out = editView(null, id);
   else if (view === 'players') out = playersView();
@@ -435,6 +464,15 @@ function render() {
   else out = boardView();
   app.dataset.route = location.hash;
   app.replaceChildren(...[out].flat());
+}
+
+// On a scoreboard the top bar offers no way out: Players / Settings are hidden (CSS keys off
+// the class) and the brand stops being a link to the parent board.
+const brand = document.querySelector('.topbar .brand');
+function setScoreboardChrome(on) {
+  document.body.classList.toggle('scoreboard', on);
+  if (on) brand.removeAttribute('href');
+  else brand.setAttribute('href', '#/');
 }
 
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });

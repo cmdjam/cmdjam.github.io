@@ -181,3 +181,9 @@ dialog{border:1px solid var(--hair);border-radius:12px;background:var(--panel);c
 dialog::backdrop{background:rgba(18,22,29,.45);}
 dialog form{display:grid;gap:12px;}
 dialog .actions{display:flex;justify-content:flex-end;gap:8px;}
+
+/* Child's read-only scoreboard (#/board/<childId>): no way back to the parent views. */
+body.scoreboard .topnav{display:none;}
+body.scoreboard .brand{cursor:default;}
+.scoreboard-view .player-head h2{font-size:24px;}
+.sb-rule{font-size:20px;}
