@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.6.0 (885cc675bc7e)">
+  <meta name="app-version" content="1.7.0 (4226e1d410e6)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -375,6 +375,20 @@ h1, h2, h3, p { margin: 0; }
 .avatar.h-estranged { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
 .avatar.small { width: 38px; height: 38px; font-size: 14px; box-shadow: 0 0 12px color-mix(in srgb, var(--hc) 30%, transparent); }
 .avatar.small.h-estranged { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
+/* A photo fills the sphere; the health glow stays around it. */
+.avatar.has-photo { overflow: hidden; background: var(--space-lift); }
+.avatar-photo { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+
+/* Edit form: photo row */
+.photo-field { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+.photo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; flex: 1; }
+.photo-button {
+  min-height: 48px; padding: 0 14px; border-radius: 12px;
+  color: var(--accent); font-size: 14px; font-weight: 600;
+}
+.photo-button:hover { background: var(--accent-soft); }
+.photo-status { flex-basis: 100%; color: var(--text-secondary); font-size: 12px; margin: 0; }
+.photo-status:empty { display: none; }
 
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
@@ -569,16 +583,50 @@ const emptyState = () => ({ contacts: [], engagements: [] });
 
 // Backup file format. Bump BACKUP_SCHEMA (and teach parseBackup the old one)
 // whenever the stored shape changes.
+// Schema 1: { app, schema, exportedAt, contacts, engagements }.
+// Schema 2: as 1, plus an optional `photo` on each contact: a base64 JPEG data
+// URL of their avatar. Photos live outside the state object (see idbStorage).
 const BACKUP_APP = 'orbit';
-const BACKUP_SCHEMA = 1;
+const BACKUP_SCHEMA = 2;
+
+// A 256px JPEG is ~20 KB; this only stops a hand-edited file from loading something huge.
+const MAX_PHOTO_BYTES = 1_000_000;
+const PHOTO_DATA_URL = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isStr = (v) => typeof v === 'string' && v.length > 0;
 const optStr = (v) => (typeof v === 'string' && v.trim() ? v : null);
+const isBlob = (v) => typeof Blob !== 'undefined' && v instanceof Blob;
+
+/** True for a base64 JPEG data URL no larger than MAX_PHOTO_BYTES once decoded. */
+function isPhotoDataUrl(v) {
+  if (typeof v !== 'string') return false;
+  const m = PHOTO_DATA_URL.exec(v);
+  return !!m && m[1].length % 4 === 0 && (m[1].length / 4) * 3 <= MAX_PHOTO_BYTES;
+}
+
+/** A photo Blob as a base64 data URL (JPEG unless the Blob says otherwise). */
+async function blobToDataUrl(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:${blob.type || 'image/jpeg'};base64,${btoa(bin)}`;
+}
+
+/** The inverse of blobToDataUrl for a checked photo data URL. */
+function dataUrlToBlob(url) {
+  const comma = url.indexOf(',');
+  const type = url.slice(5, url.indexOf(';'));
+  const bin = atob(url.slice(comma + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
 
 /**
  * Checks a backup (JSON text or an already-parsed object) and returns clean
- * copies of its contacts and engagements. Throws an Error with a short,
+ * copies of its contacts and engagements, plus `photos`: a Map of contact id
+ * to photo data URL (empty for schema 1). Throws an Error with a short,
  * user-facing message when the file is not a usable Orbit backup. Nothing is
  * written, so an import can check the whole file before touching any data.
  */
@@ -597,6 +645,7 @@ function parseBackup(input) {
   }
 
   const ids = new Set();
+  const photos = new Map();
   const contacts = data.contacts.map((c, i) => {
     const where = `Contact ${i + 1}`;
     if (!c || typeof c !== 'object') throw new Error(`${where} is not a record.`);
@@ -607,6 +656,10 @@ function parseBackup(input) {
     if (!isNum(c.createdAt)) throw new Error(`${where} (${c.name}) has no creation date.`);
     if (c.lastEngagedAt != null && !isNum(c.lastEngagedAt)) {
       throw new Error(`${where} (${c.name}) has an invalid last-contact date.`);
+    }
+    if (c.photo != null) {
+      if (!isPhotoDataUrl(c.photo)) throw new Error(`${where} (${c.name}) has an invalid photo.`);
+      photos.set(c.id, c.photo);
     }
     ids.add(c.id);
     return {
@@ -628,13 +681,27 @@ function parseBackup(input) {
     return { id: e.id, contactId: e.contactId, type: e.type, loggedAt: e.loggedAt };
   });
 
-  return { contacts, engagements };
+  return { contacts, engagements, photos };
 }
 
-/** In-memory adapter — used by tests and as a fallback when storage throws. */
-function memoryStorage() {
+/**
+ * In-memory adapter — used by tests and as a fallback when storage throws.
+ * Without `photos: true` it has no photo store, like the fallback session.
+ */
+function memoryStorage({ photos = false } = {}) {
   let value = null;
-  return { load: () => value, save: (v) => { value = v; } };
+  const stored = new Map();
+  return {
+    load: () => value,
+    save: (v) => { value = v; },
+    photos: photos ? {
+      stored,
+      load: () => stored,
+      put: (id, blob) => { stored.set(id, blob); },
+      delete: (id) => { stored.delete(id); },
+      clear: () => { stored.clear(); },
+    } : undefined,
+  };
 }
 
 /** localStorage adapter. Every access is guarded: private windows may throw. */
@@ -675,11 +742,36 @@ function withLastEngaged(contacts, engagements, old) {
 function createRepository(storage = memoryStorage()) {
   let state = storage.load() ?? emptyState();
   const listeners = new Set();
+  // Photos sit beside the state (their own store), as Blobs keyed by contact id.
+  const photoStore = storage.photos ?? null;
+  const photos = new Map(photoStore?.load() ?? []);
 
-  const commit = () => {
-    storage.save(state);
+  const notify = () => {
     const contacts = all();
     listeners.forEach((fn) => fn(contacts));
+  };
+  const commit = () => {
+    storage.save(state);
+    notify();
+  };
+  const dropPhoto = (id) => {
+    if (!photos.has(id)) return;
+    photos.delete(id);
+    photoStore.delete(id);
+  };
+  const clearPhotos = () => {
+    photos.clear();
+    photoStore?.clear();
+  };
+  /** Stores the backup's photos; returns how many were kept (0 without a photo store). */
+  const restorePhotos = (incoming) => {
+    if (!photoStore) return 0;
+    for (const [id, url] of incoming) {
+      const blob = dataUrlToBlob(url);
+      photos.set(id, blob);
+      photoStore.put(id, blob);
+    }
+    return incoming.size;
   };
 
   const all = () => state.contacts.map((c) => ({ ...c }));
@@ -738,8 +830,32 @@ function createRepository(storage = memoryStorage()) {
       return { ...next };
     },
 
-    /** Removes the contact and cascades to its engagement history. */
+    /** False when this browser can't store photos (localStorage fallback, unsaved session). */
+    canStorePhotos: () => photoStore != null,
+
+    /** The contact's photo Blob, or null. */
+    getPhoto: (id) => photos.get(id) ?? null,
+
+    /** Sets a contact's photo (a Blob, already downscaled). Throws, changing nothing, when it can't. */
+    setPhoto(id, blob) {
+      if (!photoStore) throw new Error('Photos can’t be saved in this browser');
+      if (!state.contacts.some((x) => x.id === id)) throw new Error(`Unknown contact ${id}`);
+      if (!isBlob(blob)) throw new Error('A photo must be an image');
+      photos.set(id, blob);
+      photoStore.put(id, blob);
+      notify();
+    },
+
+    /** Removes a contact's photo, if it has one; the initials show again. */
+    removePhoto(id) {
+      if (!photos.has(id)) return;
+      dropPhoto(id);
+      notify();
+    },
+
+    /** Removes the contact and cascades to its engagement history and photo. */
     delete(id) {
+      dropPhoto(id);
       state = {
         contacts: state.contacts.filter((x) => x.id !== id),
         engagements: state.engagements.filter((e) => e.contactId !== id),
@@ -807,14 +923,22 @@ function createRepository(storage = memoryStorage()) {
         .map((e) => ({ ...e }));
     },
 
-    /** A backup of everything, as a plain object ready for JSON.stringify. */
-    exportData(now = Date.now()) {
+    /**
+     * A backup of everything, as a plain object ready for JSON.stringify.
+     * Async because each photo is read into a base64 data URL on its contact.
+     */
+    async exportData(now = Date.now()) {
+      const snapshot = state;
+      const contacts = await Promise.all(snapshot.contacts.map(async (c) => {
+        const photo = photos.get(c.id);
+        return photo ? { ...c, photo: await blobToDataUrl(photo) } : { ...c };
+      }));
       return {
         app: BACKUP_APP,
         schema: BACKUP_SCHEMA,
         exportedAt: now,
-        contacts: state.contacts.map((c) => ({ ...c })),
-        engagements: state.engagements.map((e) => ({ ...e })),
+        contacts,
+        engagements: snapshot.engagements.map((e) => ({ ...e })),
       };
     },
 
@@ -825,14 +949,23 @@ function createRepository(storage = memoryStorage()) {
      * - 'merge': records are matched by id. A contact in the backup replaces
      *   the local one with the same id; its last-contact date keeps the later
      *   of the two. Engagements are added unless their id already exists.
-     * Returns counts for a confirmation message.
+     *   A contact's photo in the backup replaces the local one; a contact
+     *   without one keeps any photo it has here.
+     * - 'replace' also drops every photo here before restoring the backup's.
+     * Photos are skipped when this browser can't store them. Returns counts
+     * for a confirmation message: contacts, engagements, photos (in the file)
+     * and photosSaved.
      */
     importData(input, { mode = 'merge' } = {}) {
       if (mode !== 'merge' && mode !== 'replace') throw new Error(`Unknown import mode ${mode}`);
       const backup = parseBackup(input);
+      let photosSaved;
       if (mode === 'replace') {
-        state = backup;
+        clearPhotos();
+        photosSaved = restorePhotos(backup.photos);
+        state = { contacts: backup.contacts, engagements: backup.engagements };
       } else {
+        photosSaved = restorePhotos(backup.photos);
         const local = new Map(state.contacts.map((c) => [c.id, c]));
         const incoming = new Map(backup.contacts.map((c) => [c.id, c]));
         const contacts = [
@@ -857,17 +990,21 @@ function createRepository(storage = memoryStorage()) {
         };
       }
       commit();
-      return { contacts: backup.contacts.length, engagements: backup.engagements.length };
+      return {
+        contacts: backup.contacts.length, engagements: backup.engagements.length,
+        photos: backup.photos.size, photosSaved,
+      };
     },
 
-    /** Prototype-only: wipe everything. */
+    /** Prototype-only: wipe everything, photos included. */
     reset() {
+      clearPhotos();
       state = emptyState();
       commit();
     },
   };
 }
-return { BACKUP_APP, BACKUP_SCHEMA, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
+return { BACKUP_APP, BACKUP_SCHEMA, MAX_PHOTO_BYTES, isPhotoDataUrl, blobToDataUrl, dataUrlToBlob, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
 })();
 
 // ── src/data/idbStorage.js ────────────────────────────────────────────────
@@ -894,11 +1031,19 @@ __modules["src/data/idbStorage.js"] = (() => {
 // next load ignores them. Instead such a browser waits for IndexedDB with no
 // time limit, and if it fails outright the session runs in memory, with
 // `onError` saying that changes won't be saved.
+//
+// Photos (version 2): each contact's avatar photo is a Blob in the `photos`
+// object store, keyed by contact id, so the state object stays small. They are
+// read in full at startup too (a 256px JPEG is ~20 KB) and written through the
+// same ordered queue. The localStorage fallback and the in-memory session have
+// no photo store: the repository then reports photos as unavailable.
 const { localStorageAdapter, memoryStorage } = __modules["src/data/repository.js"];
 
 const IDB_NAME = 'orbit';
 const IDB_STORE = 'state';
 const IDB_KEY = 'v1';
+const IDB_VERSION = 2;
+const PHOTO_STORE = 'photos';
 const LEGACY_KEY = 'orbit.v1';
 const OPEN_TIMEOUT_MS = 4000;
 const MARKER_KEY = 'orbit.storage';
@@ -909,27 +1054,36 @@ const req = (r) => new Promise((resolve, reject) => {
 });
 
 /**
+ * Brings the database's object stores up to IDB_VERSION. Only ever adds
+ * stores, so a version 1 database (just `state`) keeps its data and gains
+ * `photos`. Takes the IDBDatabase from `onupgradeneeded`.
+ */
+function upgradeDb(db) {
+  if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+  if (!db.objectStoreNames.contains(PHOTO_STORE)) db.createObjectStore(PHOTO_STORE);
+}
+
+/**
  * Opens the database and resolves to a small async key-value store over its
- * one object store. Rejects when IndexedDB is missing or refuses to open
- * (some private windows, some file:// pages).
+ * `state` store, plus `photos` (all/put/delete/clear) over the photo store.
+ * Rejects when IndexedDB is missing or refuses to open (some private windows,
+ * some file:// pages).
  */
 function idbKeyValue(factory = globalThis.indexedDB, name = IDB_NAME) {
   if (!factory) return Promise.reject(new Error('IndexedDB is not available'));
   return new Promise((resolve, reject) => {
-    const open = factory.open(name, 1);
-    open.onupgradeneeded = () => {
-      if (!open.result.objectStoreNames.contains(IDB_STORE)) open.result.createObjectStore(IDB_STORE);
-    };
+    const open = factory.open(name, IDB_VERSION);
+    open.onupgradeneeded = () => upgradeDb(open.result);
     open.onblocked = () => reject(new Error('IndexedDB is blocked'));
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const db = open.result;
       // Another tab upgrading the database later: let it, and stop writing here.
       db.onversionchange = () => db.close();
-      const tx = (mode) => db.transaction(IDB_STORE, mode).objectStore(IDB_STORE);
-      const write = (fn) => new Promise((done, fail) => {
-        const t = db.transaction(IDB_STORE, 'readwrite');
-        fn(t.objectStore(IDB_STORE));
+      const tx = (mode, store = IDB_STORE) => db.transaction(store, mode).objectStore(store);
+      const write = (fn, store = IDB_STORE) => new Promise((done, fail) => {
+        const t = db.transaction(store, 'readwrite');
+        fn(t.objectStore(store));
         t.oncomplete = () => done();
         t.onerror = () => fail(t.error);
         t.onabort = () => fail(t.error ?? new Error('IndexedDB write aborted'));
@@ -938,6 +1092,16 @@ function idbKeyValue(factory = globalThis.indexedDB, name = IDB_NAME) {
         get: (key) => req(tx('readonly').get(key)),
         put: (key, value) => write((store) => store.put(value, key)),
         delete: (key) => write((store) => store.delete(key)),
+        photos: {
+          async all() {
+            const store = tx('readonly', PHOTO_STORE);
+            const [keys, values] = await Promise.all([req(store.getAllKeys()), req(store.getAll())]);
+            return new Map(keys.map((k, i) => [k, values[i]]));
+          },
+          put: (id, blob) => write((store) => store.put(blob, id), PHOTO_STORE),
+          delete: (id) => write((store) => store.delete(id), PHOTO_STORE),
+          clear: () => write((store) => store.clear(), PHOTO_STORE),
+        },
       });
     };
   });
@@ -999,18 +1163,31 @@ async function loadWithMigration(kv, legacy, live = () => true) {
 /**
  * Synchronous repository adapter over an async `kv`. `load()` returns the
  * snapshot read at startup; `save()` queues a put, so writes land in order.
- * `onError` is called when a write fails. `flush()` resolves once every
- * queued write has finished (for tests).
+ * When `kv` has a photo store, `photos` does the same for photos: `load()`
+ * returns `initialPhotos` (a Map of contact id to Blob) and put/delete/clear
+ * join the same queue. `onError` is called when a write fails. `flush()`
+ * resolves once every queued write has finished (for tests).
  */
-function cachedKvStorage(kv, initial, onError = () => {}) {
+function cachedKvStorage(kv, initial, onError = () => {}, initialPhotos = new Map()) {
   let chain = Promise.resolve();
+  const queue = (fn) => { chain = chain.then(fn).catch((e) => onError(e)); };
   return {
     load: () => initial,
-    save(state) {
-      chain = chain.then(() => kv.put(IDB_KEY, state)).catch((e) => onError(e));
-    },
+    save(state) { queue(() => kv.put(IDB_KEY, state)); },
+    photos: kv.photos ? {
+      load: () => initialPhotos,
+      put(id, blob) { queue(() => kv.photos.put(id, blob)); },
+      delete(id) { queue(() => kv.photos.delete(id)); },
+      clear() { queue(() => kv.photos.clear()); },
+    } : undefined,
     flush: () => chain,
   };
+}
+
+/** Every stored photo, or an empty Map (with `onError` told) when they can't be read. */
+async function loadPhotos(kv, onError = () => {}) {
+  if (!kv.photos) return new Map();
+  try { return await kv.photos.all(); } catch (e) { onError(e); return new Map(); }
 }
 
 /**
@@ -1032,9 +1209,11 @@ async function openStorage({
   const attempt = (async () => {
     const kv = await idbKeyValue(indexedDB);
     const { state } = await loadWithMigration(kv, legacyStore(LEGACY_KEY, localStorage), () => !gaveUp);
+    const photos = await loadPhotos(kv, onError);
     // Saves go to IndexedDB from here on; not if this session already fell back to localStorage.
+    // (Set last, after every await, so a session that gave up never leaves the marker behind.)
     if (!gaveUp) marker.set();
-    return cachedKvStorage(kv, state, onError);
+    return cachedKvStorage(kv, state, onError, photos);
   })();
   attempt.catch(() => {}); // a late failure after the timeout has nobody to tell
   const timeout = moved ? new Promise(() => {}) : new Promise((resolve) => {
@@ -1052,7 +1231,7 @@ async function openStorage({
   }
   return localStorageAdapter(LEGACY_KEY);
 }
-return { IDB_NAME, IDB_STORE, IDB_KEY, LEGACY_KEY, OPEN_TIMEOUT_MS, MARKER_KEY, idbKeyValue, legacyStore, storageMarker, loadWithMigration, cachedKvStorage, openStorage };
+return { IDB_NAME, IDB_STORE, IDB_KEY, IDB_VERSION, PHOTO_STORE, LEGACY_KEY, OPEN_TIMEOUT_MS, MARKER_KEY, upgradeDb, idbKeyValue, legacyStore, storageMarker, loadWithMigration, cachedKvStorage, loadPhotos, openStorage };
 })();
 
 // ── src/data/demo.js ──────────────────────────────────────────────────────
@@ -1734,6 +1913,18 @@ function sheet({ className = '', onDismiss, label }, ...children) {
   return root;
 }
 
+/**
+ * A person's avatar: their photo when `photoUrl` is set, otherwise the first
+ * letter of their name on the health-coloured sphere. Decorative (the name is
+ * always next to it). `className` adds size classes such as 'small'.
+ */
+function avatar({ name, healthState, photoUrl = null, className = '' }) {
+  return h('span', { class: `avatar ${className} h-${healthState}${photoUrl ? ' has-photo' : ''}`.replace(/\s+/g, ' '), 'aria-hidden': 'true' },
+    photoUrl
+      ? h('img', { class: 'avatar-photo', src: photoUrl, alt: '', draggable: 'false' })
+      : name.trim().charAt(0).toUpperCase());
+}
+
 function healthBadge(state, label) {
   return h('span', { class: `badge h-${state}` }, h('span', { class: 'dot' }), label);
 }
@@ -1760,7 +1951,7 @@ function rhythmMeter(ratio, state, { compact = false } = {}) {
   }
   return track;
 }
-return { h, sheet, healthBadge, rhythmMeter };
+return { h, sheet, avatar, healthBadge, rhythmMeter };
 })();
 
 // ── src/ui/icons.js ───────────────────────────────────────────────────────
@@ -2322,14 +2513,14 @@ return { shortDate, relativeLastContact, relativeLastContactDate, cadenceLabel, 
 
 // ── src/ui/detailSheet.js ─────────────────────────────────────────────────
 __modules["src/ui/detailSheet.js"] = (() => {
-const { h, sheet, healthBadge, rhythmMeter } = __modules["src/ui/dom.js"];
+const { h, sheet, healthBadge, rhythmMeter, avatar } = __modules["src/ui/dom.js"];
 const { icon } = __modules["src/ui/icons.js"];
 const { HEALTH_LABELS } = __modules["src/domain/health.js"];
 const { ENGAGEMENT_TYPES, engagementType } = __modules["src/domain/engagement.js"];
 const { relativeLastContact, relativeLastContactDate, cadenceLabel, daysRemainingLabel, historyDate, dateKey, moveToDate } = __modules["src/domain/format.js"];
 
 /**
- * @param {{contact, healthState, history, now}} detail  or null if not found
+ * @param {{contact, healthState, history, now, ratio, photoUrl}} detail  or null if not found
  */
 function detailSheet(detail, { onClose, onLog, onEdit, onDelete, onHistory }) {
   // detail.ratio: elapsed / cadence, or null when nothing has been logged.
@@ -2339,7 +2530,7 @@ function detailSheet(detail, { onClose, onLog, onEdit, onDelete, onHistory }) {
         h('p', { class: 'body-secondary' }, 'Contact not found'),
         h('button', { class: 'link-button', onclick: onClose }, 'Back to orbit')));
   }
-  const { contact, healthState, history, now, ratio } = detail;
+  const { contact, healthState, history, now, ratio, photoUrl = null } = detail;
   const remaining = daysRemainingLabel(contact.cadenceDays, contact.lastEngagedAt, now);
 
   const meta = (label, value, sub) => h('div', { class: 'meta-box' },
@@ -2350,8 +2541,7 @@ function detailSheet(detail, { onClose, onLog, onEdit, onDelete, onHistory }) {
   return sheet({ className: 'detail-sheet', onDismiss: onClose, label: contact.name },
     h('div', { class: 'sheet-scroll' },
       h('div', { class: 'hero' },
-        h('div', { class: `avatar h-${healthState}`, 'aria-hidden': 'true' },
-          contact.name.trim().charAt(0).toUpperCase()),
+        avatar({ name: contact.name, healthState, photoUrl }),
         h('div', {},
           h('h2', { class: 'hero-name' }, contact.name),
           healthBadge(healthState, HEALTH_LABELS[healthState])),
@@ -2411,9 +2601,10 @@ function confirmDialog({ title, body, confirm, onConfirm, onCancel }) {
 }
 
 /** Asks how to apply a checked backup: merge into, or replace, what's here. */
-function importDialog({ contacts, engagements, onMerge, onReplace, onCancel }) {
+function importDialog({ contacts, engagements, photos = 0, onMerge, onReplace, onCancel }) {
   const people = `${contacts} ${contacts === 1 ? 'person' : 'people'}`;
-  const history = `${engagements} ${engagements === 1 ? 'engagement' : 'engagements'}`;
+  const history = `${engagements} ${engagements === 1 ? 'engagement' : 'engagements'}`
+    + (photos > 0 ? ` (and ${photos} ${photos === 1 ? 'photo' : 'photos'})` : '');
   return h('div', { class: 'dialog-layer' },
     h('div', { class: 'backdrop', onclick: onCancel }),
     h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Import backup' },
@@ -2518,10 +2709,98 @@ function filterPeople(rows, { query = '', filter = 'all' } = {}) {
 return { PEOPLE_FILTERS, foldText, matchesQuery, filterPeople };
 })();
 
+// ── src/domain/photo.js ───────────────────────────────────────────────────
+__modules["src/domain/photo.js"] = (() => {
+// Avatar photo geometry. Pure, so it can be tested in Node; the canvas work
+// that uses it is in src/ui/photo.js.
+
+/** Side of the stored square JPEG, in pixels. */
+const PHOTO_SIZE = 256;
+const PHOTO_QUALITY = 0.85;
+
+/**
+ * The centred square of a `width` × `height` image to draw into a
+ * `size` × `size` avatar, as drawImage source coordinates { sx, sy, sw, sh }
+ * plus the output side `out`. Never scales up: a smaller image keeps its own
+ * resolution (its shorter side).
+ */
+function squareCrop(width, height, size = PHOTO_SIZE) {
+  if (!(width > 0 && height > 0)) throw new Error('The image has no size');
+  const side = Math.min(width, height);
+  return {
+    sx: Math.floor((width - side) / 2),
+    sy: Math.floor((height - side) / 2),
+    sw: side,
+    sh: side,
+    out: Math.min(size, side),
+  };
+}
+return { PHOTO_SIZE, PHOTO_QUALITY, squareCrop };
+})();
+
+// ── src/ui/photo.js ───────────────────────────────────────────────────────
+__modules["src/ui/photo.js"] = (() => {
+// Turning a picked image file into the stored avatar photo, and showing photos.
+const { PHOTO_QUALITY, squareCrop } = __modules["src/domain/photo.js"];
+
+/**
+ * Decodes an image file (as picked or taken with the camera), crops its centre
+ * square and downscales it to a PHOTO_SIZE JPEG Blob. Rejects when the file is
+ * not an image the browser can decode.
+ */
+async function downscalePhoto(file) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    .catch(() => { throw new Error('That file is not an image Orbit can read'); });
+  try {
+    const { sx, sy, sw, sh, out } = squareCrop(bitmap.width, bitmap.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = out;
+    canvas.height = out;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, out, out);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', PHOTO_QUALITY));
+    if (!blob) throw new Error('The photo could not be prepared');
+    return blob;
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+/**
+ * Object URLs for photo Blobs, one per contact, reused while the Blob is the
+ * same and revoked when it changes or goes away.
+ */
+function photoUrls() {
+  const urls = new Map(); // id -> { blob, url }
+  return {
+    /** The URL for `id`'s current photo, or null. */
+    get(id, blob) {
+      const known = urls.get(id);
+      if (!blob) {
+        if (known) { URL.revokeObjectURL(known.url); urls.delete(id); }
+        return null;
+      }
+      if (known?.blob === blob) return known.url;
+      if (known) URL.revokeObjectURL(known.url);
+      const url = URL.createObjectURL(blob);
+      urls.set(id, { blob, url });
+      return url;
+    },
+    /** Revokes the URLs of contacts not in `ids` (removed people). */
+    keep(ids) {
+      const live = new Set(ids);
+      for (const [id, { url }] of urls) if (!live.has(id)) { URL.revokeObjectURL(url); urls.delete(id); }
+    },
+  };
+}
+return { downscalePhoto, photoUrls };
+})();
+
 // ── src/ui/screens.js ─────────────────────────────────────────────────────
 __modules["src/ui/screens.js"] = (() => {
 // Full-screen pages: onboarding, add contact, list, history, settings.
-const { h, healthBadge, rhythmMeter } = __modules["src/ui/dom.js"];
+const { h, healthBadge, rhythmMeter, avatar } = __modules["src/ui/dom.js"];
 const { icon } = __modules["src/ui/icons.js"];
 const { bottomNav, startOrbitCanvas } = __modules["src/ui/orbitScreen.js"];
 const { HEALTH_LABELS } = __modules["src/domain/health.js"];
@@ -2529,6 +2808,7 @@ const { toOrbitData } = __modules["src/domain/layout.js"];
 const { engagementType } = __modules["src/domain/engagement.js"];
 const { CADENCE_UNITS, cadenceParts, cadencePreview, cadenceLabel, relativeLastContact, historyDate, groupByMonth } = __modules["src/domain/format.js"];
 const { PEOPLE_FILTERS, filterPeople } = __modules["src/domain/people.js"];
+const { downscalePhoto } = __modules["src/ui/photo.js"];
 
 // Illustrative planets for the onboarding backdrop — one per health state.
 const ONBOARDING_PLANETS = [
@@ -2567,9 +2847,11 @@ const NOTE_COUNTER_THRESHOLD = 240;
 /**
  * The add-contact form. Given `contact`, it edits that contact instead: the
  * fields start from its name, cadence and note, and onSave gets the same
- * { name, cadenceDays, note } shape.
+ * { name, cadenceDays, note } shape. Editing also offers a photo
+ * (`photo`: { url, available, healthState }); onSave then adds `photo`: a new
+ * downscaled JPEG Blob, null to remove it, or undefined when unchanged.
  */
-function addContactScreen({ contact = null, onCancel, onSave }) {
+function addContactScreen({ contact = null, photo: photoInfo = null, onCancel, onSave }) {
   let { number, unit } = contact ? cadenceParts(contact.cadenceDays) : { number: 2, unit: 'weeks' };
 
   const name = h('input', {
@@ -2604,7 +2886,9 @@ function addContactScreen({ contact = null, onCancel, onSave }) {
   const saveBottom = h('button', { class: 'primary-button', type: 'submit' }, contact ? 'Save changes' : 'Add to orbit');
 
   const days = () => number * CADENCE_UNITS.find((u) => u.id === unit).days;
-  const canSave = () => name.value.trim().length > 0 && number > 0;
+  let photoBusy = false;
+  const canSave = () => name.value.trim().length > 0 && number > 0 && !photoBusy;
+  const photo = contact ? photoField(contact, photoInfo, (busy) => { photoBusy = busy; sync(); }) : null;
 
   function sync() {
     previewText.textContent = cadencePreview(number, unit);
@@ -2633,7 +2917,9 @@ function addContactScreen({ contact = null, onCancel, onSave }) {
       e.preventDefault();
       if (!canSave()) return;
       const n = note.value.trim();
-      onSave({ name: name.value.trim(), cadenceDays: days(), note: n === '' ? null : n });
+      const out = { name: name.value.trim(), cadenceDays: days(), note: n === '' ? null : n };
+      if (photo && photo.value() !== undefined) out.photo = photo.value();
+      onSave(out);
     },
   },
   h('header', { class: 'page-header' },
@@ -2641,6 +2927,7 @@ function addContactScreen({ contact = null, onCancel, onSave }) {
     h('h2', { class: 'sheet-title' }, contact ? 'Edit contact' : 'Add to orbit'),
     saveTop),
   h('div', { class: 'page-scroll' },
+    photo?.el,
     h('label', { class: 'field-label', for: 'name' }, 'Name'),
     name,
     h('div', { class: 'field-label' }, 'Reach out every'),
@@ -2657,6 +2944,61 @@ function addContactScreen({ contact = null, onCancel, onSave }) {
   return form;
 }
 
+/**
+ * The photo row of the edit form: the avatar as it will look, a button that
+ * opens the file picker (which offers the camera on phones) and Remove. The
+ * picked image is downscaled straight away; `value()` is the new Blob, null
+ * when removed, or undefined when unchanged. Without photo storage it says so.
+ */
+function photoField(contact, { url = null, available = false, healthState = 'thriving' } = {}, onBusy) {
+  let value; // undefined: unchanged
+  let previewUrl = url;
+  const preview = h('div', { class: 'photo-preview' });
+  const status = h('p', { class: 'photo-status', role: 'status' });
+  const input = h('input', {
+    type: 'file', accept: 'image/*', hidden: true, tabindex: '-1', 'aria-hidden': 'true',
+    onchange: async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      onBusy(true);
+      status.textContent = 'Preparing photo…';
+      try {
+        value = await downscalePhoto(file);
+        if (previewUrl && previewUrl !== url) URL.revokeObjectURL(previewUrl);
+        previewUrl = URL.createObjectURL(value);
+        status.textContent = 'Photo ready. Save to keep it.';
+      } catch (err) {
+        status.textContent = err.message;
+      }
+      onBusy(false);
+      draw();
+    },
+  });
+  const choose = h('button', { class: 'photo-button', type: 'button', onclick: () => input.click() });
+  const remove = h('button', {
+    class: 'photo-button', type: 'button',
+    onclick: () => {
+      value = null; previewUrl = null;
+      status.textContent = 'Photo removed. Save to keep the change.';
+      draw();
+      choose.focus();
+    },
+  }, 'Remove photo');
+  function draw() {
+    preview.replaceChildren(avatar({ name: contact.name, healthState, photoUrl: previewUrl }));
+    choose.textContent = previewUrl ? 'Change photo' : 'Add photo';
+    remove.hidden = !previewUrl;
+  }
+  draw();
+  const el = h('div', { class: 'photo-field' },
+    preview,
+    available
+      ? h('div', { class: 'photo-actions', role: 'group', 'aria-label': 'Photo' }, choose, remove, input, status)
+      : h('p', { class: 'photo-status' }, 'Photos can’t be saved in this browser, so the initial is shown.'));
+  return { el, value: () => value };
+}
+
 const GROUPS = [
   ['estranged', 'Long overdue'],
   ['neglected', 'Overdue'],
@@ -2665,7 +3007,7 @@ const GROUPS = [
 ];
 
 /**
- * rows: [{contact, healthState, ratio}]. `search` ({query, filter}) is the
+ * rows: [{contact, healthState, ratio, photoUrl}]. `search` ({query, filter}) is the
  * live search and chip filter; onSearch gets each change so main.js can keep
  * it across re-renders while People stays open. Typing only rebuilds the
  * results, never the field, so focus and caret stay put.
@@ -2673,10 +3015,9 @@ const GROUPS = [
 function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch, onOpen, onNav, onAdd }) {
   let { query, filter } = search;
 
-  const row = ({ contact, healthState, ratio }) => h('li', {},
+  const row = ({ contact, healthState, ratio, photoUrl }) => h('li', {},
     h('button', { class: 'person-row', onclick: () => onOpen(contact.id) },
-      h('span', { class: `avatar small h-${healthState}`, 'aria-hidden': 'true' },
-        contact.name.trim().charAt(0).toUpperCase()),
+      avatar({ name: contact.name, healthState, photoUrl, className: 'small' }),
       h('span', { class: 'person-text' },
         h('span', { class: 'person-line' },
           h('span', { class: 'person-name' }, contact.name),
@@ -2933,6 +3274,7 @@ const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet 
 const { onboardingScreen, addContactScreen, listScreen, historyScreen, settingsScreen } = __modules["src/ui/screens.js"];
 const { h } = __modules["src/ui/dom.js"];
 const { startUpdates } = __modules["src/ui/updates.js"];
+const { photoUrls } = __modules["src/ui/photo.js"];
 
 const ONBOARDING_KEY = 'orbit.onboardingShown';
 const SPEC_GEOMETRY_KEY = 'orbit.specGeometry';
@@ -2948,6 +3290,8 @@ const pref = {
 let repo = null;
 const app = document.getElementById('app');
 const go = (path) => { location.hash = path; };
+const photoCache = photoUrls();
+const photoUrlOf = (id) => photoCache.get(id, repo.getPhoto(id));
 
 const healthOf = (c, now) => calculateHealth({
   cadenceDays: c.cadenceDays, now, createdAt: c.createdAt, lastEngagedAt: c.lastEngagedAt,
@@ -2988,6 +3332,7 @@ const overlayLayer = h('div', { class: 'overlay-layer' });
 app.append(orbit.el, pageLayer, overlayLayer);
 
 function refreshOrbit(contacts = repo.getAll()) {
+  photoCache.keep(contacts.map((c) => c.id)); // let go of removed people's photos
   // Capture `now` per emission so health states never go stale.
   const now = Date.now();
   const recentSince = now - 30 * 86_400_000;
@@ -3073,18 +3418,26 @@ function renderPage(route, now) {
       const back = () => go(`/contact/${encodeURIComponent(contact.id)}`);
       return addContactScreen({
         contact,
+        photo: { url: photoUrlOf(contact.id), available: repo.canStorePhotos(), healthState: healthOf(contact, now) },
         onCancel: back,
-        onSave: ({ name, cadenceDays, note }) => {
+        onSave: ({ name, cadenceDays, note, photo }) => {
           // Through the repository, so createdAt, lastEngagedAt and the history stay as they are.
           repo.update(contact.id, { name, cadenceDays, note });
+          let saved = 'Changes saved';
+          try {
+            if (photo === null) repo.removePhoto(contact.id);
+            else if (photo) repo.setPhoto(contact.id, photo);
+          } catch (e) { saved = `Changes saved, but not the photo: ${e.message}`; }
           back();
-          toast('Changes saved');
+          toast(saved);
         },
       });
     }
     case 'list':
       return listScreen({
-        rows: repo.getAll().map((c) => ({ contact: c, healthState: healthOf(c, now), ratio: ratioOf(c, now) })),
+        rows: repo.getAll().map((c) => ({
+          contact: c, healthState: healthOf(c, now), ratio: ratioOf(c, now), photoUrl: photoUrlOf(c.id),
+        })),
         now, search: peopleSearch, onSearch: (next) => { peopleSearch = next; },
         onOpen: (id) => go(`/contact/${id}`), onNav: navTo, onAdd: () => go('/add'),
       });
@@ -3115,7 +3468,9 @@ function renderPage(route, now) {
         onImport: (file) => file.text().then((text) => {
           let backup;
           try { backup = parseBackup(text); } catch (e) { toast(`Import failed: ${e.message}`); return; }
-          pendingImport = { text, contacts: backup.contacts.length, engagements: backup.engagements.length };
+          pendingImport = {
+            text, contacts: backup.contacts.length, engagements: backup.engagements.length, photos: backup.photos.size,
+          };
           overlay = 'import';
           render();
         }, () => toast('Import failed: the file could not be read.')),
@@ -3130,9 +3485,12 @@ function renderPage(route, now) {
   }
 }
 
-function exportBackup() {
+async function exportBackup() {
   const now = Date.now();
-  const json = JSON.stringify(repo.exportData(now), null, 2);
+  let json;
+  try {
+    json = JSON.stringify(await repo.exportData(now), null, 2);
+  } catch { toast('Export failed: a photo could not be read'); return; }
   const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
   const a = h('a', { href: url, download: `orbit-backup-${new Date(now).toISOString().slice(0, 10)}.json` });
   document.body.append(a);
@@ -3150,11 +3508,12 @@ function renderOverlays(route, now) {
       overlay = null; pendingImport = null;
       try {
         const n = repo.importData(text, { mode });
-        toast(`Imported ${n.contacts} ${n.contacts === 1 ? 'person' : 'people'}`);
+        const skipped = n.photos > n.photosSaved ? ' (photos can’t be saved in this browser)' : '';
+        toast(`Imported ${n.contacts} ${n.contacts === 1 ? 'person' : 'people'}${skipped}`);
       } catch (e) { toast(`Import failed: ${e.message}`); render(); }
     };
     return [importDialog({
-      contacts: pendingImport.contacts, engagements: pendingImport.engagements,
+      contacts: pendingImport.contacts, engagements: pendingImport.engagements, photos: pendingImport.photos,
       onCancel: close, onMerge: () => apply('merge'), onReplace: () => apply('replace'),
     })];
   }
@@ -3169,6 +3528,7 @@ function renderOverlays(route, now) {
     healthState: healthOf(contact, now),
     ratio: ratioOf(contact, now),
     history: repo.getEngagementHistory(contact.id),
+    photoUrl: photoUrlOf(contact.id),
     now,
   };
   const layers = [detailSheet(detail, {
