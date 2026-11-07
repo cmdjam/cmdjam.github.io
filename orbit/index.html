@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.9.0 (fd927e4935b7)">
+  <meta name="app-version" content="1.10.0 (9f90021f2879)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -3450,6 +3450,51 @@ function startUpdates(root, swUrl, toast) {
 return { startUpdates };
 })();
 
+// ── src/ui/badge.js ───────────────────────────────────────────────────────
+__modules["src/ui/badge.js"] = (() => {
+// The installed app's home-screen icon badge: how many people are due (dueCount in src/domain/due.js).
+// The Badging API exists only for installed PWAs on Chromium desktop and Android and Safari on iOS 16.4+;
+// everywhere else this does nothing. Same pattern as Daymark's src/lib/badge.js.
+
+/** Show `n` on the badge, or clear it at 0. Never throws; rejections are ignored. @param {number} n */
+function setDueBadge(n, nav = globalThis.navigator) {
+  try {
+    const p = n > 0 ? nav?.setAppBadge?.(n) : nav?.clearAppBadge?.();
+    p?.catch?.(() => {});
+  } catch { /* a convenience: ignore */ }
+}
+return { setDueBadge };
+})();
+
+// ── src/domain/due.js ─────────────────────────────────────────────────────
+__modules["src/domain/due.js"] = (() => {
+// "Who is due": the count behind the home-screen badge (#46). Pure and DOM-free, so it can be tested in
+// Node; src/ui/badge.js hands the number to the Badging API. A native port would keep this and swap the
+// indicator for a notification.
+const { calculateHealth } = __modules["src/domain/health.js"];
+
+/** The health states that count as due: everyone not on track (People's Due soon and Overdue chips). */
+const DUE_STATES = Object.freeze(['drifting', 'neglected', 'estranged']);
+
+/**
+ * How many contacts are not on track at `now`. Contacts in their first 24 hours with no catch-up count,
+ * because SA-001 starts them as Drifting.
+ * @param {Array<{cadenceDays: number, createdAt: number, lastEngagedAt?: number|null}>} contacts
+ * @param {Date|number} now
+ */
+function dueCount(contacts, now) {
+  let n = 0;
+  for (const c of contacts) {
+    const state = calculateHealth({
+      cadenceDays: c.cadenceDays, now, createdAt: c.createdAt, lastEngagedAt: c.lastEngagedAt,
+    });
+    if (DUE_STATES.includes(state)) n += 1;
+  }
+  return n;
+}
+return { DUE_STATES, dueCount };
+})();
+
 // ── src/main.js ───────────────────────────────────────────────────────────
 __modules["src/main.js"] = (() => {
 // App shell: hash router + wiring between repository, domain and views.
@@ -3476,6 +3521,8 @@ const { onboardingScreen, addContactScreen, listScreen, historyScreen, settingsS
 const { h } = __modules["src/ui/dom.js"];
 const { startUpdates } = __modules["src/ui/updates.js"];
 const { photoUrls } = __modules["src/ui/photo.js"];
+const { setDueBadge } = __modules["src/ui/badge.js"];
+const { dueCount } = __modules["src/domain/due.js"];
 
 const ONBOARDING_KEY = 'orbit.onboardingShown';
 const SPEC_GEOMETRY_KEY = 'orbit.specGeometry';
@@ -3537,6 +3584,7 @@ function refreshOrbit(contacts = repo.getAll()) {
   photoCache.keep(contacts.map((c) => c.id)); // let go of removed people's photos
   // Capture `now` per emission so health states never go stale.
   const now = Date.now();
+  setDueBadge(dueCount(contacts, now)); // the home-screen icon badge, where supported
   const recentSince = now - 30 * 86_400_000;
   orbit.setContacts(separatePhases(contacts.map((c) => ({
     ...toOrbitData({ id: c.id, name: c.name, cadenceDays: c.cadenceDays, healthState: healthOf(c, now) }),
@@ -3840,6 +3888,10 @@ openStorage({ onError: () => toast('Could not save changes in this browser') }).
   repo.watchAll((contacts) => { refreshOrbit(contacts); render(); });
   // Re-evaluate periodically so the SA-001 24h grace period lapses on its own.
   setInterval(() => refreshOrbit(), 60_000);
+  // Back from the background the badge (and health) may be stale: an installed app can sit for days.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshOrbit();
+  });
 });
 
 // Offline support for the deployed app (see sw.js) and the update banner. Opened from file:// or
