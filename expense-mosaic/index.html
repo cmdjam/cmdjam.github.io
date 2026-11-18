@@ -6,7 +6,7 @@
 <title>Expense Mosaic</title>
 <meta name="description" content="Collect receipts into a mosaic you can annotate, total and print." />
 <meta name="theme-color" content="#ECEFF3" />
-<meta name="app-version" content="1.1.0 (e963b0637383)" />
+<meta name="app-version" content="1.2.0 (2d4be1e59364)" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -400,6 +400,17 @@
   </div>
 </div>
 
+<!-- files shared from another app, when there is more than one batch -->
+<div class="modal" id="shareDlg" hidden>
+  <form class="sheet" id="shareForm">
+    <header><h3 id="shareTitle">Add shared receipts</h3><button type="button" class="x" data-close aria-label="Close">×</button></header>
+    <div class="body">
+      <label class="field"><span class="label">Add to</span><select id="shareBatch"></select></label>
+    </div>
+    <footer><div class="right"><button type="button" class="btn" data-close>Discard</button><button type="submit" class="btn primary" id="shareAdd">Add</button></div></footer>
+  </form>
+</div>
+
 <!-- print options -->
 <div class="modal" id="printDlg" hidden>
   <form class="sheet" id="printForm">
@@ -730,10 +741,14 @@
   function isImage(f){ return /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif)$/i.test(f.name||""); }
 
   var adding = false;
-  function addFiles(list){
+  // opts (optional): done(file) is called once a file is finished with (stored, or failed for a
+  // reason other than storage, so retrying won't help); into names the batch in the closing toast.
+  // Resolves when the run is over.
+  function addFiles(list, opts){
+    opts = opts || {};
     var files = Array.prototype.slice.call(list||[]).filter(function(f){ return isPdf(f) || isImage(f); });
-    if(!files.length){ toast("Nothing to add – use images (JPG, PNG…) or PDFs.", true); return; }
-    if(adding){ toast("Still adding the previous files…", true); return; }
+    if(!files.length){ toast("Nothing to add – use images (JPG, PNG…) or PDFs.", true); return Promise.resolve(); }
+    if(adding){ toast("Still adding the previous files…", true); return Promise.resolve(); }
     adding = true; askPersist();
     var added = [], failed = [], fi = 0, b = S.batch;
     var last = S.items.length ? S.items[S.items.length-1].order : 0;
@@ -753,22 +768,32 @@
       if(fi >= files.length) return Promise.resolve();
       var f = files[fi++], label = "Adding " + fi + " of " + files.length;
       toast(label + "…", false, 0);
+      var stored = 0, total = 0;   // PDF pages stored so far, of total
       var p = isPdf(f)
         ? pdfPages(f, function(i,n){ toast(label + " – page " + i + " of " + n + "…", false, 0); }).then(function(pages){
-            return pages.reduce(function(acc, pg){ pg.fromPdf = true; return acc.then(function(){ return store(pg, pg.name); }); }, Promise.resolve());
+            total = pages.length;
+            return pages.reduce(function(acc, pg){ pg.fromPdf = true; return acc.then(function(){ return store(pg, pg.name); }).then(function(){ stored++; }); }, Promise.resolve());
           })
         : normalizeImage(f).then(function(src){ return store(src, f.name || "Pasted image"); });
       return p.catch(function(e){
-        if(e && (e.name==="QuotaExceededError" || /quota/i.test(e.message||""))) throw e;
+        if(e && (e.name==="QuotaExceededError" || /quota/i.test(e.message||""))){
+          // Storage filled up part-way through a PDF: keep the pages that fit and count the file as
+          // finished, so a retry (e.g. a shared file still stashed) doesn't add those pages twice.
+          if(stored){
+            failed.push((f.name||"PDF") + " (only " + stored + " of " + total + " pages fit – browser storage is full)");
+            if(opts.done) opts.done(f);
+          }
+          throw e;
+        }
         failed.push((f.name||"image") + (/heic|heif/i.test(f.name+f.type) ? " (HEIC isn't supported by this browser – export it as JPEG)" : " (" + (e && e.message || e) + ")"));
-      }).then(next);
+      }).then(function(){ if(opts.done) opts.done(f); }).then(next);
     }
-    next().catch(storageErr).then(function(){
+    return next().catch(storageErr).then(function(){
       adding = false;
       b.updated = Date.now(); putBatch(b).catch(function(){});
       render();
       if(failed.length) toast("Couldn't add: " + failed.join("; "), true, 9000);
-      else toast("Added " + added.length + " receipt" + (added.length===1?"":"s") + ".");
+      else toast("Added " + added.length + " receipt" + (added.length===1?"":"s") + (opts.into ? " to " + opts.into : "") + ".");
       if(added.length===1 && added[0].fromPdf) openCrop(added[0]);   // single PDF page: offer to snip right away
       else if(added.length===1) openViewer(S.items.indexOf(added[0]));
       showUsage();
@@ -908,6 +933,7 @@
   function openModal(id){ $("#"+id).hidden = false; }
   function closeModal(id){
     $("#"+id).hidden = true;
+    if(id==="shareDlg" && shareFiles){ var f = shareFiles; shareFiles = null; dropShared(f); toast("Shared receipts discarded."); }
     if(id==="viewer"){ viewIdx = -1; $("#vImg").removeAttribute("src"); }
   }
   function topModal(){
@@ -1372,6 +1398,75 @@
   });
   window.addEventListener("resize", function(){ if(!$("#cropper").hidden) drawCrop(); });
 
+  // ---------- shared from other apps ----------
+  // The manifest's share_target posts shared files to share-target; sw.js stashes each one in
+  // SHARE_CACHE (key share-target/<time>-<index>, the name in X-File-Name) and redirects here with
+  // ?shared=1. On load the page adds whatever is stashed through addFiles, then deletes each entry
+  // once its file is stored (or never can be: unsupported or unreadable). A storage failure leaves
+  // the rest stashed, to try again next time the app opens. Same cache name as in sw.js.
+  var SHARE_CACHE = "expense-mosaic-share";
+  var shareFiles = null;     // waiting for the "Add to" choice
+  function readShared(){
+    if(!window.caches || location.protocol.indexOf("http")!==0) return Promise.resolve([]);
+    return caches.has(SHARE_CACHE).then(function(has){
+      if(!has) return [];
+      return caches.open(SHARE_CACHE).then(function(c){
+        return c.keys().then(function(reqs){
+          reqs.sort(function(a,b){ return a.url < b.url ? -1 : a.url > b.url ? 1 : 0; });
+          return Promise.all(reqs.map(function(r){
+            return c.match(r).then(function(res){
+              return res.blob().then(function(b){
+                var name = "";
+                try{ name = decodeURIComponent(res.headers.get("X-File-Name")||""); }catch(e){}
+                return { file:new File([b], name || "Shared file", { type:b.type }), key:r };
+              });
+            });
+          }));
+        });
+      });
+    });
+  }
+  function dropShared(entries){
+    return caches.open(SHARE_CACHE).then(function(c){
+      return Promise.all(entries.map(function(e){ return c.delete(e.key); }));
+    }).catch(function(e){ console.warn("Couldn't clear the shared files", e); });
+  }
+  // Resolves once no addFiles run is in progress, so a share isn't turned away with "Still adding".
+  function whenIdle(){
+    return new Promise(function(resolve){ (function check(){ if(!adding) resolve(); else setTimeout(check, 200); })(); });
+  }
+  function addShared(entries, b){
+    var finished = [];
+    return whenIdle().then(function(){ return b===S.batch ? null : selectBatch(b.id); }).then(function(){
+      return addFiles(entries.map(function(e){ return e.file; }), { into:b.name, done:function(f){ finished.push(f); } });
+    }).then(function(){
+      return dropShared(entries.filter(function(e){ return finished.indexOf(e.file) >= 0 || !(isPdf(e.file) || isImage(e.file)); }));
+    });
+  }
+  function takeShared(){
+    var flagged = /[?&]shared=/.test(location.search);
+    if(flagged && history.replaceState) history.replaceState(null, "", location.pathname + location.hash);
+    return readShared().then(function(entries){
+      if(!entries.length){ if(flagged) toast("Nothing arrived from the share. Try again, or use Add receipts.", true); return; }
+      if(S.batches.length < 2) return addShared(entries, S.batch);
+      shareFiles = entries;
+      $("#shareTitle").textContent = "Add " + entries.length + " shared file" + (entries.length===1 ? "" : "s");
+      $("#shareBatch").innerHTML = S.batches.map(function(b){
+        return '<option value="' + esc(b.id) + '"' + (b===S.batch ? " selected" : "") + ">" + esc(b.name) + "</option>";
+      }).join("");
+      openModal("shareDlg");
+      setTimeout(function(){ $("#shareAdd").focus(); }, 30);
+    }).catch(function(e){ toast("Couldn't read the shared files (" + (e && e.message || e) + ").", true); });
+  }
+  $("#shareForm").addEventListener("submit", function(e){
+    e.preventDefault();
+    var entries = shareFiles, id = $("#shareBatch").value;
+    var b = S.batches.filter(function(x){ return x.id===id; })[0] || S.batch;
+    shareFiles = null;
+    closeModal("shareDlg");
+    if(entries) addShared(entries, b).catch(storageErr);
+  });
+
   // ---------- boot ----------
   loadUi();
   getAll("batches").then(function(bs){
@@ -1382,7 +1477,7 @@
       return putBatch(b).then(function(){ return selectBatch(b.id); });
     }
     return selectBatch(ui.batchId);
-  }).then(showUsage).catch(function(e){
+  }).then(function(){ showUsage(); takeShared(); }, function(e){
     $("#title").textContent = "Storage unavailable";
     toast("Can't open browser storage (" + (e && e.message || e) + "). Private browsing can block it.", true, 0);
   });
