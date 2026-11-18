@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07090F">
-  <meta name="app-version" content="1.10.1 (ed63de6f2ab8)">
+  <meta name="app-version" content="1.11.0 (f9f410cc6e0c)">
   <title>Orbit</title>
   <meta name="description" content="The people you care about orbit you, coloured by how recently you reached out.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -176,6 +176,16 @@ h1, h2, h3, p { margin: 0; }
 .legend-item .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hc); box-shadow: 0 0 6px var(--hc); }
 .legend-item.h-estranged .dot { background: var(--estranged-hl); box-shadow: none; }
 .legend-count { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Circle switcher (#101): one scrollable row of chips under the legend. */
+.orbit-heading { min-width: 0; margin-right: 12px; }
+.circle-switcher {
+  margin-top: 10px; max-width: 100%; width: max-content;
+  overflow-x: auto; scrollbar-width: none; background: rgba(15, 19, 31, 0.78);
+}
+.circle-switcher::-webkit-scrollbar { display: none; }
+.circle-switcher .chip, .circle-picker .chip, .circle-filter .chip { flex: none; padding: 0 14px; white-space: nowrap; }
+.circle-note { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); max-width: 260px; }
+.circle-note:empty { display: none; }
 
 .user-node {
   position: absolute; left: 50%; top: 87%;
@@ -343,6 +353,10 @@ h1, h2, h3, p { margin: 0; }
 
 /* People */
 .people-tools { display: grid; gap: 10px; margin-bottom: 16px; }
+.circle-filter { overflow-x: auto; scrollbar-width: none; }
+.circle-filter::-webkit-scrollbar { display: none; }
+/* Wrapping rows keep 8px apart so each chip's 48px hit area (::after) stays its own. */
+.circle-picker { flex-wrap: wrap; row-gap: 8px; }
 .people-search { position: relative; display: flex; align-items: center; }
 .people-search > .icon-search { position: absolute; left: 14px; color: var(--text-secondary); pointer-events: none; display: flex; }
 .people-search-input { padding-left: 42px; padding-right: 48px; min-height: 48px; }
@@ -382,6 +396,12 @@ a.settings-row { color: inherit; text-decoration: none; }
 .settings-row > .icon { flex: none; color: var(--text-secondary); }
 .settings-row { cursor: pointer; }
 .settings-row.danger { color: var(--danger); }
+.circle-row { cursor: default; gap: 4px; padding: 6px 0; }
+.circle-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-add-icon {
+  flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+}
 .app-version { margin-top: 24px; text-align: center; font-size: 12px; }
 
 /* ── Health visuals ─────────────────────────────────────────────────────── */
@@ -592,6 +612,87 @@ a.settings-row { color: inherit; text-decoration: none; }
 'use strict';
 const __modules = {};
 
+// ── src/domain/circles.js ─────────────────────────────────────────────────
+__modules["src/domain/circles.js"] = (() => {
+// Circles (#101): named groups of people (Family, Friends, Work, or the user's own).
+// Pure and DOM-free. A circle is { id, name }; a contact lists the circles it is in as
+// `circleIds`. People store ids, so renaming a circle touches no person.
+
+/** The circle switcher's and the People chips' "everyone" choice. */
+const ALL_CIRCLES = 'all';
+
+/** The longest circle name the forms accept. */
+const CIRCLE_NAME_MAX = 24;
+
+/**
+ * The starter set a new data set begins with. Fixed ids (not random) so two browsers that both
+ * started with them merge their backups into one Family, not two.
+ */
+const STARTER_CIRCLES = Object.freeze([
+  Object.freeze({ id: 'family', name: 'Family' }),
+  Object.freeze({ id: 'friends', name: 'Friends' }),
+  Object.freeze({ id: 'work', name: 'Work' }),
+]);
+
+const starterCircles = () => STARTER_CIRCLES.map((c) => ({ ...c }));
+
+/** A contact's circle ids, never null (data from before circles has none). */
+const circleIdsOf = (contact) => (Array.isArray(contact?.circleIds) ? contact.circleIds : []);
+
+/**
+ * The circle a stored choice points at, or ALL_CIRCLES when it is unset or that circle no
+ * longer exists (deleted here, or replaced by an import).
+ */
+function resolveCircle(choice, circles) {
+  return choice && circles.some((c) => c.id === choice) ? choice : ALL_CIRCLES;
+}
+
+/**
+ * Does `contact` belong to the chosen circle? ALL_CIRCLES (or a choice that is not one of
+ * `circles`) matches everyone; a circle id left on a contact after its circle was deleted
+ * matches nothing.
+ */
+function inCircle(contact, choice, circles) {
+  const id = resolveCircle(choice, circles);
+  return id === ALL_CIRCLES || circleIdsOf(contact).includes(id);
+}
+
+/**
+ * Orbit records with a `dimmed` flag for everyone outside the chosen circle, for painter.js.
+ * Each record needs `circleIds`. Only the flag changes: phases, radii and order are kept, so
+ * choosing a circle never moves a planet. With ALL_CIRCLES nobody is dimmed.
+ */
+function dimOutsideCircle(planets, choice, circles) {
+  return planets.map((p) => ({ ...p, dimmed: !inCircle(p, choice, circles) }));
+}
+
+/** How many of `contacts` are in each circle: Map of circle id to count. */
+function circleCounts(contacts, circles) {
+  const counts = new Map(circles.map((c) => [c.id, 0]));
+  for (const contact of contacts) {
+    for (const id of new Set(circleIdsOf(contact))) if (counts.has(id)) counts.set(id, counts.get(id) + 1);
+  }
+  return counts;
+}
+
+/**
+ * Checks a circle name for add or rename: the trimmed name, or throws with a short,
+ * user-facing message. `circles` are the existing ones; `exceptId` is the circle being renamed.
+ * Inner runs of spaces collapse to one, and names are unique ignoring case.
+ */
+function checkCircleName(name, circles, exceptId = null) {
+  const clean = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+  if (!clean) throw new Error('A circle needs a name');
+  if (clean.length > CIRCLE_NAME_MAX) throw new Error(`Keep circle names to ${CIRCLE_NAME_MAX} characters`);
+  const lower = clean.toLowerCase();
+  if (circles.some((c) => c.id !== exceptId && c.name.toLowerCase() === lower)) {
+    throw new Error(`There is already a circle called ${clean}`);
+  }
+  return clean;
+}
+return { ALL_CIRCLES, CIRCLE_NAME_MAX, STARTER_CIRCLES, starterCircles, circleIdsOf, resolveCircle, inCircle, dimOutsideCircle, circleCounts, checkCircleName };
+})();
+
 // ── src/data/repository.js ────────────────────────────────────────────────
 __modules["src/data/repository.js"] = (() => {
 // Mirrors IContactRepository. The UI imports only `createRepository` and talks
@@ -599,18 +700,22 @@ __modules["src/data/repository.js"] = (() => {
 // the storage adapter without touching screens.
 //
 // Dates are stored as epoch milliseconds.
+const { starterCircles, checkCircleName, circleIdsOf } = __modules["src/domain/circles.js"];
 
 const KEY = 'orbit.v1';
 
-const emptyState = () => ({ contacts: [], engagements: [] });
+// A new data set starts with the starter circles (Family, Friends, Work).
+const emptyState = () => ({ circles: starterCircles(), contacts: [], engagements: [] });
 
 // Backup file format. Bump BACKUP_SCHEMA (and teach parseBackup the old one)
 // whenever the stored shape changes.
 // Schema 1: { app, schema, exportedAt, contacts, engagements }.
 // Schema 2: as 1, plus an optional `photo` on each contact: a base64 JPEG data
 // URL of their avatar. Photos live outside the state object (see idbStorage).
+// Schema 3: as 2, plus `circles` ([{ id, name }]) and `circleIds` on each
+// contact (#101). Older files import with no circles.
 const BACKUP_APP = 'orbit';
-const BACKUP_SCHEMA = 2;
+const BACKUP_SCHEMA = 3;
 
 // A 256px JPEG is ~20 KB; this only stops a hand-edited file from loading something huge.
 const MAX_PHOTO_BYTES = 1_000_000;
@@ -620,6 +725,28 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isStr = (v) => typeof v === 'string' && v.length > 0;
 const optStr = (v) => (typeof v === 'string' && v.trim() ? v : null);
 const isBlob = (v) => typeof Blob !== 'undefined' && v instanceof Blob;
+
+/** Distinct non-empty string ids, in order. */
+const cleanIds = (ids) => [...new Set((Array.isArray(ids) ? ids : []).filter((x) => typeof x === 'string' && x))];
+
+/**
+ * Brings a stored state object up to the current shape without dropping
+ * anything: data from before circles (#101) gets `circles: []` and every
+ * contact `circleIds: []`. Unknown keys and fields are kept. Idempotent.
+ */
+function migrateState(raw) {
+  if (!raw || typeof raw !== 'object') return emptyState();
+  const circles = Array.isArray(raw.circles)
+    ? raw.circles.filter((c) => c && isStr(c.id) && typeof c.name === 'string')
+    : [];
+  return {
+    ...raw,
+    circles,
+    contacts: (Array.isArray(raw.contacts) ? raw.contacts : [])
+      .map((c) => (c && typeof c === 'object' ? { ...c, circleIds: cleanIds(c.circleIds) } : c)),
+    engagements: Array.isArray(raw.engagements) ? raw.engagements : [],
+  };
+}
 
 /** True for a base64 JPEG data URL no larger than MAX_PHOTO_BYTES once decoded. */
 function isPhotoDataUrl(v) {
@@ -649,7 +776,10 @@ function dataUrlToBlob(url) {
 /**
  * Checks a backup (JSON text or an already-parsed object) and returns clean
  * copies of its contacts and engagements, plus `photos`: a Map of contact id
- * to photo data URL (empty for schema 1). Throws an Error with a short,
+ * to photo data URL (empty for schema 1), and `circles`: the file's circles,
+ * or null for a file from before circles (schema 1 and 2, whose contacts get
+ * `circleIds: []`). A contact's circle ids that name no circle in the file
+ * are dropped. Throws an Error with a short,
  * user-facing message when the file is not a usable Orbit backup. Nothing is
  * written, so an import can check the whole file before touching any data.
  */
@@ -667,6 +797,22 @@ function parseBackup(input) {
     throw new Error('The backup is missing its contacts or engagements.');
   }
 
+  let circles = null;
+  if (data.schema >= 3) {
+    if (!Array.isArray(data.circles)) throw new Error('The backup is missing its circles.');
+    const circleIds = new Set();
+    circles = data.circles.map((c, i) => {
+      const where = `Circle ${i + 1}`;
+      if (!c || typeof c !== 'object') throw new Error(`${where} is not a record.`);
+      if (!isStr(c.id)) throw new Error(`${where} has no id.`);
+      if (circleIds.has(c.id)) throw new Error(`${where} repeats the id ${c.id}.`);
+      if (typeof c.name !== 'string' || !c.name.trim()) throw new Error(`${where} has no name.`);
+      circleIds.add(c.id);
+      return { id: c.id, name: c.name.trim() };
+    });
+  }
+  const knownCircle = new Set(circles?.map((c) => c.id) ?? []);
+
   const ids = new Set();
   const photos = new Map();
   const contacts = data.contacts.map((c, i) => {
@@ -680,6 +826,9 @@ function parseBackup(input) {
     if (c.lastEngagedAt != null && !isNum(c.lastEngagedAt)) {
       throw new Error(`${where} (${c.name}) has an invalid last-contact date.`);
     }
+    if (c.circleIds != null && (!Array.isArray(c.circleIds) || !c.circleIds.every(isStr))) {
+      throw new Error(`${where} (${c.name}) has invalid circles.`);
+    }
     if (c.photo != null) {
       if (!isPhotoDataUrl(c.photo)) throw new Error(`${where} (${c.name}) has an invalid photo.`);
       photos.set(c.id, c.photo);
@@ -688,6 +837,7 @@ function parseBackup(input) {
     return {
       id: c.id, name: c.name, cadenceDays: c.cadenceDays, createdAt: c.createdAt,
       lastEngagedAt: c.lastEngagedAt ?? null, note: optStr(c.note),
+      circleIds: cleanIds(c.circleIds).filter((id) => knownCircle.has(id)),
     };
   });
 
@@ -704,7 +854,7 @@ function parseBackup(input) {
     return { id: e.id, contactId: e.contactId, type: e.type, loggedAt: e.loggedAt };
   });
 
-  return { contacts, engagements, photos };
+  return { contacts, engagements, photos, circles };
 }
 
 /**
@@ -763,7 +913,8 @@ function withLastEngaged(contacts, engagements, old) {
 }
 
 function createRepository(storage = memoryStorage()) {
-  let state = storage.load() ?? emptyState();
+  const stored = storage.load();
+  let state = stored == null ? emptyState() : migrateState(stored);
   const listeners = new Set();
   // Photos sit beside the state (their own store), as Blobs keyed by contact id.
   const photoStore = storage.photos ?? null;
@@ -797,7 +948,14 @@ function createRepository(storage = memoryStorage()) {
     return incoming.size;
   };
 
-  const all = () => state.contacts.map((c) => ({ ...c }));
+  const all = () => state.contacts.map((c) => ({ ...c, circleIds: [...circleIdsOf(c)] }));
+  const knownCircleIds = (ids) => {
+    if (!Array.isArray(ids)) throw new Error('Circles must be a list');
+    const clean = cleanIds(ids);
+    const unknown = clean.find((id) => !state.circles.some((c) => c.id === id));
+    if (unknown !== undefined) throw new Error(`Unknown circle ${unknown}`);
+    return clean;
+  };
 
   return {
     /** Calls `fn` now and on every change. Returns an unsubscribe function. */
@@ -811,24 +969,26 @@ function createRepository(storage = memoryStorage()) {
 
     getById(id) {
       const c = state.contacts.find((x) => x.id === id);
-      return c ? { ...c } : null;
+      return c ? { ...c, circleIds: [...circleIdsOf(c)] } : null;
     },
 
-    /** Insert or replace. */
+    /** Insert or replace. `circleIds` defaults to none; ids of circles that don't exist are left out. */
     save(contact) {
       const i = state.contacts.findIndex((x) => x.id === contact.id);
+      const known = new Set(state.circles.map((c) => c.id));
+      const record = { ...contact, circleIds: cleanIds(contact.circleIds).filter((id) => known.has(id)) };
       state = {
         ...state,
         contacts: i === -1
-          ? [...state.contacts, { ...contact }]
-          : state.contacts.map((x, j) => (j === i ? { ...contact } : x)),
+          ? [...state.contacts, record]
+          : state.contacts.map((x, j) => (j === i ? record : x)),
       };
       commit();
     },
 
     /**
-     * Edits a contact's name, cadence and note; any of the three may be left
-     * out. Everything else (id, createdAt, lastEngagedAt) and the engagement
+     * Edits a contact's name, cadence, note and circles (`circleIds`, ids of
+     * existing circles); any of them may be left out. Everything else (id, createdAt, lastEngagedAt) and the engagement
      * history are kept. Throws on an unknown id or an invalid value, and then
      * changes nothing.
      */
@@ -848,9 +1008,41 @@ function createRepository(storage = memoryStorage()) {
         next.cadenceDays = changes.cadenceDays;
       }
       if ('note' in changes) next.note = optStr(changes.note)?.trim() ?? null;
+      if ('circleIds' in changes) next.circleIds = knownCircleIds(changes.circleIds);
       state = { ...state, contacts: state.contacts.map((x) => (x.id === id ? next : x)) };
       commit();
-      return { ...next };
+      return { ...next, circleIds: [...circleIdsOf(next)] };
+    },
+
+    /** Every circle, in the order they were made: [{ id, name }]. */
+    getCircles: () => state.circles.map((c) => ({ ...c })),
+
+    /** Adds a circle and returns it. Throws on a blank, too long or taken name, changing nothing. */
+    addCircle(name) {
+      const circle = { id: newId(), name: checkCircleName(name, state.circles) };
+      state = { ...state, circles: [...state.circles, circle] };
+      commit();
+      return { ...circle };
+    },
+
+    /** Renames a circle. People keep its id, so no person changes. Throws like addCircle. */
+    renameCircle(id, name) {
+      if (!state.circles.some((c) => c.id === id)) throw new Error(`Unknown circle ${id}`);
+      const clean = checkCircleName(name, state.circles, id);
+      state = { ...state, circles: state.circles.map((c) => (c.id === id ? { ...c, name: clean } : c)) };
+      commit();
+    },
+
+    /** Deletes a circle and takes its id off every person in it. Nobody is removed. */
+    deleteCircle(id) {
+      if (!state.circles.some((c) => c.id === id)) throw new Error(`Unknown circle ${id}`);
+      state = {
+        ...state,
+        circles: state.circles.filter((c) => c.id !== id),
+        contacts: state.contacts.map((c) => (circleIdsOf(c).includes(id)
+          ? { ...c, circleIds: circleIdsOf(c).filter((x) => x !== id) } : c)),
+      };
+      commit();
     },
 
     /** False when this browser can't store photos (localStorage fallback, unsaved session). */
@@ -880,6 +1072,7 @@ function createRepository(storage = memoryStorage()) {
     delete(id) {
       dropPhoto(id);
       state = {
+        ...state,
         contacts: state.contacts.filter((x) => x.id !== id),
         engagements: state.engagements.filter((e) => e.contactId !== id),
       };
@@ -891,6 +1084,7 @@ function createRepository(storage = memoryStorage()) {
       if (!contact) throw new Error(`Unknown contact ${contactId}`);
       const engagement = { id: newId(), contactId, type, loggedAt };
       state = {
+        ...state,
         engagements: [...state.engagements, engagement],
         contacts: state.contacts.map((x) =>
           x.id === contactId
@@ -920,7 +1114,7 @@ function createRepository(storage = memoryStorage()) {
         next.loggedAt = changes.loggedAt;
       }
       const engagements = state.engagements.map((e) => (e.id === id ? next : e));
-      state = { engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
+      state = { ...state, engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
       commit();
       return { ...next };
     },
@@ -934,7 +1128,7 @@ function createRepository(storage = memoryStorage()) {
       const old = state.engagements.find((e) => e.id === id);
       if (!old) throw new Error(`Unknown engagement ${id}`);
       const engagements = state.engagements.filter((e) => e.id !== id);
-      state = { engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
+      state = { ...state, engagements, contacts: withLastEngaged(state.contacts, engagements, old) };
       commit();
     },
 
@@ -960,6 +1154,7 @@ function createRepository(storage = memoryStorage()) {
         app: BACKUP_APP,
         schema: BACKUP_SCHEMA,
         exportedAt: now,
+        circles: snapshot.circles.map((c) => ({ ...c })),
         contacts,
         engagements: snapshot.engagements.map((e) => ({ ...e })),
       };
@@ -975,6 +1170,13 @@ function createRepository(storage = memoryStorage()) {
      *   A contact's photo in the backup replaces the local one; a contact
      *   without one keeps any photo it has here.
      * - 'replace' also drops every photo here before restoring the backup's.
+     * - Circles: 'replace' takes the backup's (none from a file made before
+     *   circles). 'merge' adds the backup's circles by id; one with the name
+     *   of a different circle here (ignoring case) joins that circle instead.
+     *   A circle with the same id takes the backup's name, unless that name
+     *   belongs to a different circle here; then it keeps its own.
+     *   A merged contact takes the backup's circles, unless the file is from
+     *   before circles: then it keeps the ones it has here.
      * Photos are skipped when this browser can't store them. Returns counts
      * for a confirmation message: contacts, engagements, photos (in the file)
      * and photosSaved.
@@ -986,9 +1188,23 @@ function createRepository(storage = memoryStorage()) {
       if (mode === 'replace') {
         clearPhotos();
         photosSaved = restorePhotos(backup.photos);
-        state = { contacts: backup.contacts, engagements: backup.engagements };
+        state = { ...state, circles: backup.circles ?? [], contacts: backup.contacts, engagements: backup.engagements };
       } else {
         photosSaved = restorePhotos(backup.photos);
+        // Backup circle id -> the id it has here.
+        const circleMap = new Map();
+        const circles = state.circles.map((c) => ({ ...c }));
+        for (const b of backup.circles ?? []) {
+          const same = circles.find((c) => c.id === b.id);
+          const named = circles.find((c) => c.id !== b.id && c.name.toLowerCase() === b.name.toLowerCase());
+          if (same) {
+            // Take the backup's name unless another circle here already has it.
+            if (!named) same.name = b.name;
+            circleMap.set(b.id, b.id);
+          } else if (named) circleMap.set(b.id, named.id);
+          else { circles.push({ ...b }); circleMap.set(b.id, b.id); }
+        }
+        const mapIds = (ids) => cleanIds(ids.map((id) => circleMap.get(id)));
         const local = new Map(state.contacts.map((c) => [c.id, c]));
         const incoming = new Map(backup.contacts.map((c) => [c.id, c]));
         const contacts = [
@@ -996,9 +1212,13 @@ function createRepository(storage = memoryStorage()) {
             const b = incoming.get(c.id);
             if (!b) return c;
             const last = [c.lastEngagedAt, b.lastEngagedAt].filter((v) => v != null);
-            return { ...b, lastEngagedAt: last.length ? Math.max(...last) : null };
+            return {
+              ...b,
+              lastEngagedAt: last.length ? Math.max(...last) : null,
+              circleIds: backup.circles ? mapIds(b.circleIds) : circleIdsOf(c),
+            };
           }),
-          ...backup.contacts.filter((c) => !local.has(c.id)),
+          ...backup.contacts.filter((c) => !local.has(c.id)).map((c) => ({ ...c, circleIds: mapIds(c.circleIds) })),
         ];
         const seen = new Set(state.engagements.map((e) => e.id));
         const added = backup.engagements.filter((e) => !seen.has(e.id));
@@ -1006,6 +1226,8 @@ function createRepository(storage = memoryStorage()) {
         const newest = new Map();
         for (const e of added) newest.set(e.contactId, Math.max(newest.get(e.contactId) ?? -Infinity, e.loggedAt));
         state = {
+          ...state,
+          circles,
           contacts: contacts.map((c) => (newest.has(c.id)
             ? { ...c, lastEngagedAt: Math.max(c.lastEngagedAt ?? -Infinity, newest.get(c.id)) }
             : c)),
@@ -1027,7 +1249,7 @@ function createRepository(storage = memoryStorage()) {
     },
   };
 }
-return { BACKUP_APP, BACKUP_SCHEMA, MAX_PHOTO_BYTES, isPhotoDataUrl, blobToDataUrl, dataUrlToBlob, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
+return { BACKUP_APP, BACKUP_SCHEMA, MAX_PHOTO_BYTES, migrateState, isPhotoDataUrl, blobToDataUrl, dataUrlToBlob, parseBackup, memoryStorage, localStorageAdapter, newId, createRepository };
 })();
 
 // ── src/data/idbStorage.js ────────────────────────────────────────────────
@@ -1060,12 +1282,12 @@ __modules["src/data/idbStorage.js"] = (() => {
 // read in full at startup too (a 256px JPEG is ~20 KB) and written through the
 // same ordered queue. The localStorage fallback and the in-memory session have
 // no photo store: the repository then reports photos as unavailable.
-const { localStorageAdapter, memoryStorage } = __modules["src/data/repository.js"];
+const { localStorageAdapter, memoryStorage, migrateState } = __modules["src/data/repository.js"];
 
 const IDB_NAME = 'orbit';
 const IDB_STORE = 'state';
 const IDB_KEY = 'v1';
-const IDB_VERSION = 2;
+const IDB_VERSION = 3;
 const PHOTO_STORE = 'photos';
 const LEGACY_KEY = 'orbit.v1';
 const OPEN_TIMEOUT_MS = 4000;
@@ -1077,13 +1299,27 @@ const req = (r) => new Promise((resolve, reject) => {
 });
 
 /**
- * Brings the database's object stores up to IDB_VERSION. Only ever adds
- * stores, so a version 1 database (just `state`) keeps its data and gains
- * `photos`. Takes the IDBDatabase from `onupgradeneeded`.
+ * Brings the database up to IDB_VERSION. Only ever adds stores, so a version
+ * 1 database (just `state`) keeps its data and gains `photos`. Takes the
+ * IDBDatabase, the old version and the versionchange transaction from
+ * `onupgradeneeded`.
+ *
+ * Version 3 (circles, #101) adds no store: it rewrites the saved state in
+ * place through `migrateState`, which adds `circles: []` and an empty
+ * `circleIds` to every contact and drops nothing. The repository runs the
+ * same migration on load, so data from the localStorage fallback (or moved
+ * from `orbit.v1` later) gets it too.
  */
-function upgradeDb(db) {
+function upgradeDb(db, oldVersion = 0, transaction = null) {
   if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
   if (!db.objectStoreNames.contains(PHOTO_STORE)) db.createObjectStore(PHOTO_STORE);
+  if (oldVersion >= 1 && oldVersion < 3 && transaction) {
+    const store = transaction.objectStore(IDB_STORE);
+    const get = store.get(IDB_KEY);
+    get.onsuccess = () => {
+      if (get.result != null) store.put(migrateState(get.result), IDB_KEY);
+    };
+  }
 }
 
 /**
@@ -1096,7 +1332,7 @@ function idbKeyValue(factory = globalThis.indexedDB, name = IDB_NAME) {
   if (!factory) return Promise.reject(new Error('IndexedDB is not available'));
   return new Promise((resolve, reject) => {
     const open = factory.open(name, IDB_VERSION);
-    open.onupgradeneeded = () => upgradeDb(open.result);
+    open.onupgradeneeded = (e) => upgradeDb(open.result, e.oldVersion, open.transaction);
     open.onblocked = () => reject(new Error('IndexedDB is blocked'));
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
@@ -1266,22 +1502,22 @@ const { newId } = __modules["src/data/repository.js"];
 const DAY = 86_400_000;
 
 const SEED = [
-  // name, cadenceDays, days since last engagement (null = never), note
-  ['Mum', 7, 2, 'Ask about the garden'],
-  ['Sam', 3, 1, null],
-  ['Priya', 14, 13, 'Lend her the book'],
-  ['Alex', 30, 45, null],
-  ['Jordan', 7, 20, 'Congratulate on new job'],
-  ['Grandad', 14, 9, null],
+  // name, cadenceDays, days since last engagement (null = never), note, starter circles
+  ['Mum', 7, 2, 'Ask about the garden', ['family']],
+  ['Sam', 3, 1, null, ['friends']],
+  ['Priya', 14, 13, 'Lend her the book', ['friends', 'work']],
+  ['Alex', 30, 45, null, ['work']],
+  ['Jordan', 7, 20, 'Congratulate on new job', ['work']],
+  ['Grandad', 14, 9, null, ['family']],
   ['Theo', 90, 40, null],
-  ['Uni friends', 60, 150, 'Plan the reunion'],
+  ['Uni friends', 60, 150, 'Plan the reunion', ['friends']],
   ['Robin', 21, null, null],
 ];
 
 const TYPES = ['message', 'call', 'coffee', 'other'];
 
 function seedDemo(repo, now = Date.now()) {
-  SEED.forEach(([name, cadenceDays, ago, note], i) => {
+  SEED.forEach(([name, cadenceDays, ago, note, circleIds = []], i) => {
     const contact = {
       id: newId(),
       name,
@@ -1290,6 +1526,7 @@ function seedDemo(repo, now = Date.now()) {
       createdAt: ago == null ? now - 3_600_000 : now - (ago + 60) * DAY,
       lastEngagedAt: null,
       note,
+      circleIds, // the starter circles' ids; the repository leaves out any that were deleted
     };
     repo.save(contact);
     if (ago == null) return;
@@ -2240,6 +2477,11 @@ const ARC_SEGMENTS = 64;
 const MIN_TOUCH_RADIUS = 24; // 48px diameter minimum touch target
 const TRAIL_RADIANS = 0.32;
 const TRAIL_STEPS = 10;
+/**
+ * Opacity kept by a planet whose contact has `dimmed: true` (outside the circle chosen in the
+ * orbit header, #101). It stays where it is, faint, unlabelled and not tappable.
+ */
+const DIM_ALPHA = 0.18;
 
 /**
  * Canvas geometry.
@@ -2321,13 +2563,15 @@ function positionPlanets(contacts, elapsedSeconds, width, height, geom = SPEC_GE
     .sort((a, b) => a.depth - b.depth);
 }
 
-const planetAlpha = (p) => Math.min(1, Math.max(0, (0.25 + p.depth * 0.75) * edgeAlpha(p.angle)));
+/** A positioned planet's opacity: depth and edge fade, times DIM_ALPHA when its contact is dimmed. */
+const planetAlpha = (p) => Math.min(1, Math.max(0, (0.25 + p.depth * 0.75) * edgeAlpha(p.angle))) *
+  (p.c.dimmed ? DIM_ALPHA : 1);
 
-/** Id of the frontmost planet under (x, y), or null. */
+/** Id of the frontmost planet under (x, y), or null. Dimmed planets can't be tapped. */
 function hitTest(contacts, elapsedSeconds, width, height, x, y, geom = SPEC_GEOMETRY, sizeMul = 1) {
   const front = positionPlanets(contacts, elapsedSeconds, width, height, geom, sizeMul).reverse();
   for (const p of front) {
-    if (planetAlpha(p) < 0.01) continue; // invisible
+    if (p.c.dimmed || planetAlpha(p) < 0.01) continue; // dimmed or invisible
     const touchR = Math.max(p.r, MIN_TOUCH_RADIUS);
     if (Math.hypot(x - p.px, y - p.py) <= touchR) return p.c.id;
   }
@@ -2452,7 +2696,7 @@ function drawLabels(ctx, planets, size) {
   const placed = [];
   for (const p of [...planets].reverse()) {
     const eA = edgeAlpha(p.angle);
-    if (p.depth <= LABEL_DEPTH_THRESHOLD || eA <= 0.5) continue;
+    if (p.c.dimmed || p.depth <= LABEL_DEPTH_THRESHOLD || eA <= 0.5) continue;
     const labelAlpha = Math.min(1, (p.depth - LABEL_DEPTH_THRESHOLD) / 0.35) *
       Math.min(1, (eA - 0.5) / 0.3) * planetAlpha(p);
     if (labelAlpha <= 0.02) continue;
@@ -2474,7 +2718,7 @@ function drawBottomFade(ctx, w, h) {
   ctx.fillStyle = g;
   ctx.fillRect(0, h - 150, w, 150);
 }
-return { USER_Y_FRACTION, SPEC_GEOMETRY, fillGeometry, angleFor, edgeAlpha, positionPlanets, hitTest, paintOrbit };
+return { USER_Y_FRACTION, DIM_ALPHA, SPEC_GEOMETRY, fillGeometry, angleFor, edgeAlpha, positionPlanets, planetAlpha, hitTest, paintOrbit };
 })();
 
 // ── src/ui/orbitScreen.js ─────────────────────────────────────────────────
@@ -2533,10 +2777,16 @@ function startOrbitCanvas(canvas, get) {
   };
 }
 
-function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo }) {
+/**
+ * The orbit canvas page. `onCircle(id)` hears a pick in the header's circle switcher
+ * ('all' or a circle id); main.js remembers it and sends back planets with `dimmed` flags.
+ */
+function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo, onCircle = () => {} }) {
   const canvas = h('canvas', { class: 'orbit-canvas', 'aria-hidden': 'true' });
   const planetButtons = h('ul', { class: 'sr-only', 'aria-label': 'People in your orbit' });
   const legend = h('ul', { class: 'legend', 'aria-label': 'Health summary' });
+  const switcher = h('div', { class: 'chips circle-switcher', role: 'group', 'aria-label': 'Show circle', hidden: true });
+  const circleNote = h('p', { class: 'circle-note', role: 'status' });
   const empty = h('div', { class: 'empty-state', hidden: true },
     h('div', { class: 'empty-orb', 'aria-hidden': 'true' }),
     h('p', { class: 'empty-title' }, 'Your orbit is empty'),
@@ -2551,7 +2801,7 @@ function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo }
       h('span', { class: 'user-pulse', 'aria-hidden': 'true' }),
       h('span', { class: 'user-core' }, icon('user', { size: 20 }))),
     h('header', { class: 'orbit-appbar' },
-      h('div', {}, h('h1', { class: 'canvas-title' }, 'Orbit'), legend),
+      h('div', { class: 'orbit-heading' }, h('h1', { class: 'canvas-title' }, 'Orbit'), legend, switcher, circleNote),
       h('button', { class: 'icon-button', 'aria-label': 'Settings', onclick: onSettings },
         icon('settings', { size: 18 }))),
     h('button', { class: 'fab', 'aria-label': 'Add to orbit', onclick: onAdd }, icon('plus', { size: 22 })),
@@ -2573,11 +2823,33 @@ function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo }
     canvas.style.cursor = loop.hitTest(e.clientX, e.clientY) ? 'pointer' : 'default';
   });
 
+  let circles = [];
+  let chosen = 'all';
+  const drawSwitcher = () => {
+    // A re-render keeps keyboard focus on the chip that had it.
+    const focused = switcher.contains(document.activeElement) ? document.activeElement.dataset.circle : null;
+    switcher.replaceChildren(...[{ id: 'all', name: 'All' }, ...circles].map((c) => h('button', {
+      class: 'chip', type: 'button', 'data-circle': c.id, 'aria-pressed': String(c.id === chosen),
+      onclick: () => onCircle(c.id),
+    }, c.name)));
+    if (focused) switcher.querySelector(`[data-circle="${CSS.escape(focused)}"]`)?.focus();
+  };
+
   return {
     el,
     setSpecGeometry(v) { spec = v; },
     setPlanetStyle(v) { style = v; },
-    /** @param {Array} data ContactOrbitData records */
+    /** The header's circle switcher: every circle, and the one chosen ('all' for everyone). */
+    setCircles(list, choice) {
+      const same = choice === chosen && JSON.stringify(list) === JSON.stringify(circles);
+      circles = list;
+      chosen = choice;
+      if (!same) drawSwitcher();
+    },
+    /**
+     * @param {Array} data ContactOrbitData records; those with `dimmed` are outside the chosen
+     *   circle: drawn faint in place, and left out of the legend and the planet button list.
+     */
     setContacts(data, labels) {
       // A newer lastEngagedAt than last time means a catch-up was just logged.
       if (lastSeen) {
@@ -2589,9 +2861,14 @@ function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo }
       contacts = data.map((c) => (flares.has(c.id) ? { ...c, flareAt: flares.get(c.id) } : c));
       empty.hidden = data.length > 0;
       el.classList.toggle('is-empty', data.length === 0);
+      switcher.hidden = data.length === 0 || circles.length === 0;
+      const shown = data.filter((c) => !c.dimmed);
+      const circleName = circles.find((c) => c.id === chosen)?.name;
+      circleNote.textContent = data.length > 0 && circleName && shown.length === 0
+        ? `Nobody in ${circleName} yet. Pick circles when you add or edit someone.` : '';
 
       const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
-      data.forEach((c) => { counts[c.healthState]++; });
+      shown.forEach((c) => { counts[c.healthState]++; });
       legend.replaceChildren(...STATES.filter((s) => counts[s] > 0).map((s) =>
         h('li', { class: `legend-item h-${s}`, title: labels[s] },
           h('span', { class: 'dot', 'aria-hidden': 'true' }),
@@ -2599,7 +2876,7 @@ function createOrbitScreen({ onPlanetTap, onAdd, onNav, onSettings, onSeedDemo }
           h('span', { class: 'legend-label' }, labels[s].toLowerCase()))));
 
       // Screen-reader / keyboard equivalent of tapping a planet.
-      planetButtons.replaceChildren(...data.map((c) => h('li', {},
+      planetButtons.replaceChildren(...shown.map((c) => h('li', {},
         h('button', { onclick: () => onPlanetTap(c.id) },
           `${c.name} — ${labels[c.healthState]} — tap to view`))));
     },
@@ -2726,6 +3003,37 @@ function importDialog({ contacts, engagements, photos = 0, onMerge, onReplace, o
 }
 
 /**
+ * Names a circle (Settings → Circles: add or rename). `onSave(name)` returns an
+ * error message to show under the field, or nothing when the name was taken.
+ */
+function circleDialog({ title, value = '', confirm, maxLength, onSave, onCancel }) {
+  const input = h('input', {
+    class: 'input', id: 'circle-name', type: 'text', autocomplete: 'off', maxlength: maxLength,
+    placeholder: 'Neighbours, Climbing, Old team…', value, 'aria-describedby': 'circle-name-error',
+  });
+  const error = h('p', { class: 'field-error', id: 'circle-name-error', role: 'alert', hidden: true });
+  input.addEventListener('input', () => { error.hidden = true; });
+  queueMicrotask(() => { input.focus(); input.select(); });
+  return h('div', { class: 'dialog-layer' },
+    h('div', { class: 'backdrop', onclick: onCancel }),
+    h('form', {
+      class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, novalidate: true,
+      onsubmit: (e) => {
+        e.preventDefault();
+        const message = onSave(input.value);
+        if (message) { error.textContent = message; error.hidden = false; input.focus(); }
+      },
+    },
+    h('h3', { class: 'sheet-title' }, title),
+    h('label', { class: 'field-label', for: 'circle-name' }, 'Name'),
+    input,
+    error,
+    h('div', { class: 'dialog-actions' },
+      h('button', { class: 'text-button', type: 'button', onclick: onCancel }, 'Cancel'),
+      h('button', { class: 'text-button accent', type: 'submit' }, confirm))));
+}
+
+/**
  * Edit one logged catch-up: its type and its day (not in the future). Save
  * passes { type, loggedAt } with the time of day kept; Delete asks first.
  */
@@ -2778,12 +3086,13 @@ function editEngagementSheet({ engagement, name, now, onSave, onDelete, onOpenCo
       h('button', { class: 'link-button danger', type: 'button', onclick: onDelete }, 'Delete catch-up'),
       h('button', { class: 'link-button', type: 'button', onclick: onClose }, 'Cancel'))));
 }
-return { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet };
+return { detailSheet, logSheet, confirmDialog, importDialog, circleDialog, editEngagementSheet };
 })();
 
 // ── src/domain/people.js ──────────────────────────────────────────────────
 __modules["src/domain/people.js"] = (() => {
-// People screen search and health filter. Pure and DOM-free, so it can be tested in Node.
+// People screen search, health filter and circle filter. Pure and DOM-free, so it can be tested in Node.
+const { inCircle } = __modules["src/domain/circles.js"];
 
 /** The People chips. Overdue covers both Long overdue (estranged) and Overdue (neglected). */
 const PEOPLE_FILTERS = Object.freeze([
@@ -2806,12 +3115,16 @@ function matchesQuery(contact, query) {
 }
 
 /**
- * rows: [{contact, healthState, ...}]. Keeps the rows that match both the
- * search `query` and the chip `filter` (a PEOPLE_FILTERS id; unknown → all).
+ * rows: [{contact, healthState, ...}]. Keeps the rows that match the search
+ * `query`, the health chip `filter` (a PEOPLE_FILTERS id; unknown → all) and
+ * the circle chip `circle` (a circle id, or 'all'). `circles` are the circles
+ * that exist: a `circle` not among them counts as all, and a circle id left on
+ * a contact after its circle was deleted matches nothing.
  */
-function filterPeople(rows, { query = '', filter = 'all' } = {}) {
+function filterPeople(rows, { query = '', filter = 'all', circle = 'all', circles = [] } = {}) {
   const states = PEOPLE_FILTERS.find((f) => f.id === filter)?.states ?? null;
-  return rows.filter((r) => (!states || states.includes(r.healthState)) && matchesQuery(r.contact, query));
+  return rows.filter((r) => (!states || states.includes(r.healthState)) &&
+    inCircle(r.contact, circle, circles) && matchesQuery(r.contact, query));
 }
 return { PEOPLE_FILTERS, foldText, matchesQuery, filterPeople };
 })();
@@ -3042,8 +3355,24 @@ const NOTE_COUNTER_THRESHOLD = 240;
  * { name, cadenceDays, note } shape. Editing also offers a photo
  * (`photo`: { url, available, healthState }); onSave then adds `photo`: a new
  * downscaled JPEG Blob, null to remove it, or undefined when unchanged.
+ * `circles` ([{id, name}]) are offered as toggle chips; onSave's `circleIds`
+ * lists the picked ones (any number, in circle order).
  */
-function addContactScreen({ contact = null, photo: photoInfo = null, onCancel, onSave }) {
+function addContactScreen({ contact = null, circles = [], photo: photoInfo = null, onCancel, onSave }) {
+  const picked = new Set(contact?.circleIds ?? []);
+  const circleButtons = circles.map((c) => h('button', {
+    class: 'chip', type: 'button', 'data-circle': c.id, 'aria-pressed': String(picked.has(c.id)),
+    onclick: (e) => {
+      if (picked.has(c.id)) picked.delete(c.id); else picked.add(c.id);
+      e.currentTarget.setAttribute('aria-pressed', String(picked.has(c.id)));
+    },
+  }, c.name));
+  const circleField = [
+    h('div', { class: 'field-label', id: 'circles-label' }, 'Circles'),
+    circles.length > 0
+      ? h('div', { class: 'chips circle-picker', role: 'group', 'aria-labelledby': 'circles-label' }, circleButtons)
+      : h('p', { class: 'person-sub' }, 'No circles yet. Add them in Settings.'),
+  ];
   let { number, unit } = contact ? cadenceParts(contact.cadenceDays) : { number: 2, unit: 'weeks' };
 
   const name = h('input', {
@@ -3109,7 +3438,10 @@ function addContactScreen({ contact = null, photo: photoInfo = null, onCancel, o
       e.preventDefault();
       if (!canSave()) return;
       const n = note.value.trim();
-      const out = { name: name.value.trim(), cadenceDays: days(), note: n === '' ? null : n };
+      const out = {
+        name: name.value.trim(), cadenceDays: days(), note: n === '' ? null : n,
+        circleIds: circles.filter((c) => picked.has(c.id)).map((c) => c.id),
+      };
       if (photo && photo.value() !== undefined) out.photo = photo.value();
       onSave(out);
     },
@@ -3126,6 +3458,7 @@ function addContactScreen({ contact = null, photo: photoInfo = null, onCancel, o
     h('div', { class: 'cadence-picker' }, stepper, h('div', { class: 'chips', role: 'group' }, unitButtons)),
     cadenceError,
     preview,
+    circleField,
     h('div', { class: 'field-label-row' },
       h('label', { class: 'field-label', for: 'note' }, 'Note'), counter),
     note),
@@ -3199,13 +3532,17 @@ const GROUPS = [
 ];
 
 /**
- * rows: [{contact, healthState, ratio, photoUrl}]. `search` ({query, filter}) is the
- * live search and chip filter; onSearch gets each change so main.js can keep
+ * rows: [{contact, healthState, ratio, photoUrl}]. `search` ({query, filter, circle}) is the
+ * live search, health chip and circle chip; onSearch gets each change so main.js can keep
  * it across re-renders while People stays open. Typing only rebuilds the
- * results, never the field, so focus and caret stay put.
+ * results, never the field, so focus and caret stay put. `circles` ([{id, name}])
+ * fill the circle chips (none shown when there are no circles).
  */
-function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch, onOpen, onNav, onAdd }) {
+function listScreen({
+  rows, now, circles = [], search = { query: '', filter: 'all', circle: 'all' }, onSearch, onOpen, onNav, onAdd,
+}) {
   let { query, filter } = search;
+  let circle = circles.some((c) => c.id === search.circle) ? search.circle : 'all';
 
   const row = ({ contact, healthState, ratio, photoUrl }) => h('li', {},
     h('button', { class: 'person-row', onclick: () => onOpen(contact.id) },
@@ -3229,6 +3566,11 @@ function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch
     class: 'chip', type: 'button', 'data-filter': f.id,
     onclick: () => { filter = f.id; update(); },
   }, f.label));
+  // "Everyone", not "All", so it reads apart from the health row's All.
+  const circleChips = [{ id: 'all', name: 'Everyone' }, ...circles].map((c) => h('button', {
+    class: 'chip', type: 'button', 'data-circle': c.id,
+    onclick: () => { circle = c.id; update(); },
+  }, c.name));
   const status = h('p', { class: 'sr-only', role: 'status' });
   const results = h('div', { class: 'people-results' });
 
@@ -3240,10 +3582,11 @@ function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch
   }
 
   function update() {
-    onSearch?.({ query, filter });
+    onSearch?.({ query, filter, circle });
     clearButton.hidden = query === '';
     chips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.filter === filter)));
-    const shown = filterPeople(rows, { query, filter });
+    circleChips.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.circle === circle)));
+    const shown = filterPeople(rows, { query, filter, circle, circles });
     // Most urgent first; within a group, furthest past cadence first.
     const sections = GROUPS.map(([state, title]) => ({
       state, title,
@@ -3252,6 +3595,10 @@ function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch
           a.contact.name.localeCompare(b.contact.name)),
     })).filter((g) => g.rows.length > 0);
     const chip = PEOPLE_FILTERS.find((f) => f.id === filter);
+    const circleName = circles.find((c) => c.id === circle)?.name;
+    const nobody = !circleName ? `Nobody is ${chip.label.toLowerCase()} right now.`
+      : filter === 'all' ? `Nobody in ${circleName} yet.`
+        : `Nobody in ${circleName} is ${chip.label.toLowerCase()} right now.`;
     status.textContent = shown.length === rows.length ? ''
       : `${shown.length} of ${rows.length} ${rows.length === 1 ? 'person' : 'people'}`;
     results.replaceChildren(...(sections.length > 0
@@ -3265,10 +3612,10 @@ function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch
           h('p', { class: 'body-secondary' }, `Nobody matches “${query.trim()}”`),
           h('button', { class: 'link-button', type: 'button', onclick: clearSearch }, 'Clear'))]
         : [h('div', { class: 'people-empty' },
-          h('p', { class: 'body-secondary' }, `Nobody is ${chip.label.toLowerCase()} right now.`),
+          h('p', { class: 'body-secondary' }, nobody),
           h('button', {
             class: 'link-button', type: 'button',
-            onclick: () => { filter = 'all'; update(); chips[0].focus(); },
+            onclick: () => { filter = 'all'; circle = 'all'; update(); chips[0].focus(); },
           }, 'Show everyone'))]));
   }
 
@@ -3288,6 +3635,8 @@ function listScreen({ rows, now, search = { query: '', filter: 'all' }, onSearch
           h('div', { class: 'people-tools' },
             h('div', { class: 'people-search' },
               icon('search', { size: 18 }), input, clearButton),
+            circles.length > 0 &&
+              h('div', { class: 'chips circle-filter', role: 'group', 'aria-label': 'Circle' }, circleChips),
             h('div', { class: 'chips people-filter', role: 'group', 'aria-label': 'Show' }, chips),
             status),
           results,
@@ -3340,8 +3689,13 @@ function historyScreen({ entries, names, people, filterId = null, now, onFilter,
     bottomNav('history', onNav));
 }
 
+/**
+ * Settings. `circles` ([{id, name, count}]) fill the Circles group, with Add,
+ * Rename and Delete; main.js opens the dialogs for them.
+ */
 function settingsScreen({
   onBack, onSeedDemo, onReset, onReplayOnboarding, specGeometry, onToggleSpec, onExport, onImport, lastExport,
+  circles = [], onAddCircle, onRenameCircle, onDeleteCircle,
 }) {
   // A hidden picker behind a normal button keeps the row keyboard-friendly.
   const picker = h('input', {
@@ -3362,6 +3716,16 @@ function settingsScreen({
     h('div', { class: 'page-scroll' },
       h('p', { class: 'body-dim' },
         'Prototype build. Data lives only in this browser, so export a backup now and then.'),
+      group('settings-circles', 'Circles', 'Group people to filter People and the orbit.',
+        ...circles.map((c) => h('div', { class: 'settings-row circle-row' },
+          h('span', { class: 'person-text' },
+            h('span', { class: 'circle-name' }, c.name),
+            h('span', { class: 'person-sub' }, `${c.count} ${c.count === 1 ? 'person' : 'people'}`)),
+          h('button', { class: 'text-button', type: 'button', 'aria-label': `Rename ${c.name}`, onclick: () => onRenameCircle(c.id) }, 'Rename'),
+          h('button', { class: 'text-button danger', type: 'button', 'aria-label': `Delete ${c.name}`, onclick: () => onDeleteCircle(c.id) }, 'Delete'))),
+        h('button', { class: 'settings-row', onclick: onAddCircle },
+          h('span', { class: 'settings-add-icon', 'aria-hidden': 'true' }, icon('plus', { size: 16 })),
+          h('span', { class: 'person-text' }, h('span', {}, 'Add circle')))),
       group('settings-data', 'Your data', null,
         row('Export backup', lastExport, { onclick: onExport }),
         row('Import backup', 'Restore from an Orbit backup file', { onclick: () => picker.click() }),
@@ -3516,18 +3880,20 @@ const { ONBOARDING_START } = __modules["src/domain/onboarding.js"];
 const { lastExportLabel } = __modules["src/domain/format.js"];
 const { normalizeStyle } = __modules["src/orbit/planet.js"];
 const { createOrbitScreen } = __modules["src/ui/orbitScreen.js"];
-const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet } = __modules["src/ui/detailSheet.js"];
+const { detailSheet, logSheet, confirmDialog, importDialog, editEngagementSheet, circleDialog } = __modules["src/ui/detailSheet.js"];
 const { onboardingScreen, addContactScreen, listScreen, historyScreen, settingsScreen } = __modules["src/ui/screens.js"];
 const { h } = __modules["src/ui/dom.js"];
 const { startUpdates } = __modules["src/ui/updates.js"];
 const { photoUrls } = __modules["src/ui/photo.js"];
 const { setDueBadge } = __modules["src/ui/badge.js"];
 const { dueCount } = __modules["src/domain/due.js"];
+const { ALL_CIRCLES, CIRCLE_NAME_MAX, resolveCircle, dimOutsideCircle, circleCounts, circleIdsOf } = __modules["src/domain/circles.js"];
 
 const ONBOARDING_KEY = 'orbit.onboardingShown';
 const SPEC_GEOMETRY_KEY = 'orbit.specGeometry';
 const LAST_EXPORT_KEY = 'orbit.lastExport'; // ms of the last successful Export backup
 const PLANET_STYLE_KEY = 'orbit.planetStyle'; // written by playground.html
+const CIRCLE_KEY = 'orbit.circle'; // the orbit header's chosen circle id; unset for All
 const pref = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } },
@@ -3566,6 +3932,10 @@ const orbit = createOrbitScreen({
   onSettings: () => go('/settings'),
   onNav: navTo,
   onSeedDemo: () => { if (repo) seedDemo(repo); },
+  onCircle: (id) => {
+    if (id === ALL_CIRCLES) pref.del(CIRCLE_KEY); else pref.set(CIRCLE_KEY, id);
+    if (repo) refreshOrbit();
+  },
 });
 orbit.setSpecGeometry(pref.get(SPEC_GEOMETRY_KEY) === '1');
 const loadPlanetStyle = () => {
@@ -3586,13 +3956,22 @@ function refreshOrbit(contacts = repo.getAll()) {
   const now = Date.now();
   setDueBadge(dueCount(contacts, now)); // the home-screen icon badge, where supported
   const recentSince = now - 30 * 86_400_000;
-  orbit.setContacts(separatePhases(contacts.map((c) => ({
+  // The circle switcher: a remembered circle that no longer exists falls back to All.
+  const circles = repo.getCircles();
+  const stored = pref.get(CIRCLE_KEY);
+  const circle = resolveCircle(stored, circles);
+  if (stored && circle === ALL_CIRCLES) pref.del(CIRCLE_KEY);
+  orbit.setCircles(circles, circle);
+  // Phases are separated over everyone; the circle then only dims, so no planet moves.
+  const planets = separatePhases(contacts.map((c) => ({
     ...toOrbitData({ id: c.id, name: c.name, cadenceDays: c.cadenceDays, healthState: healthOf(c, now) }),
     createdAt: c.createdAt, // separatePhases keeps older planets in place
     lastEngagedAt: c.lastEngagedAt,
     ratio: ratioOf(c, now),
     moons: repo.getEngagementHistory(c.id).filter((e) => e.loggedAt >= recentSince).length,
-  }))), HEALTH_LABELS);
+    circleIds: circleIdsOf(c),
+  })));
+  orbit.setContacts(dimOutsideCircle(planets, circle, circles), HEALTH_LABELS);
 }
 
 // ── Router ────────────────────────────────────────────────────────────────
@@ -3613,7 +3992,8 @@ let overlay = null; // transient modal state: 'log' | 'delete' (contact route), 
 //                     'engagement' | 'deleteEngagement' (history, for `editingId`)
 let editingId = null; // the catch-up open for editing on History
 let pendingImport = null; // a checked backup waiting for Merge/Replace
-const NO_PEOPLE_SEARCH = { query: '', filter: 'all' };
+let editingCircleId = null; // the circle being renamed or deleted on Settings
+const NO_PEOPLE_SEARCH = { query: '', filter: 'all', circle: ALL_CIRCLES };
 let peopleSearch = NO_PEOPLE_SEARCH; // People search + chip filter; never saved, reset on leaving People
 let onboardingPos = ONBOARDING_START; // the intro step; kept across re-renders, reset on leaving the intro
 
@@ -3657,10 +4037,11 @@ function renderPage(route, now) {
       });
     case 'add':
       return addContactScreen({
+        circles: repo.getCircles(),
         onCancel: () => go('/'),
-        onSave: ({ name, cadenceDays, note }) => {
+        onSave: ({ name, cadenceDays, note, circleIds }) => {
           repo.save({
-            id: newId(), name, cadenceDays, note,
+            id: newId(), name, cadenceDays, note, circleIds,
             createdAt: Date.now(),
             lastEngagedAt: null, // SA-001: never engaged → starts Drifting
           });
@@ -3674,11 +4055,14 @@ function renderPage(route, now) {
       const back = () => go(`/contact/${encodeURIComponent(contact.id)}`);
       return addContactScreen({
         contact,
+        circles: repo.getCircles(),
         photo: { url: photoUrlOf(contact.id), available: repo.canStorePhotos(), healthState: healthOf(contact, now) },
         onCancel: back,
-        onSave: ({ name, cadenceDays, note, photo }) => {
+        onSave: ({ name, cadenceDays, note, circleIds, photo }) => {
           // Through the repository, so createdAt, lastEngagedAt and the history stay as they are.
-          repo.update(contact.id, { name, cadenceDays, note });
+          // A circle deleted in another tab meanwhile is left out rather than failing the save.
+          const known = new Set(repo.getCircles().map((c) => c.id));
+          repo.update(contact.id, { name, cadenceDays, note, circleIds: circleIds.filter((id) => known.has(id)) });
           let saved = 'Changes saved';
           try {
             if (photo === null) repo.removePhoto(contact.id);
@@ -3694,7 +4078,7 @@ function renderPage(route, now) {
         rows: repo.getAll().map((c) => ({
           contact: c, healthState: healthOf(c, now), ratio: ratioOf(c, now), photoUrl: photoUrlOf(c.id),
         })),
-        now, search: peopleSearch, onSearch: (next) => { peopleSearch = next; },
+        now, circles: repo.getCircles(), search: peopleSearch, onSearch: (next) => { peopleSearch = next; },
         onOpen: (id) => go(`/contact/${id}`), onNav: navTo, onAdd: () => go('/add'),
       });
     case 'history': {
@@ -3712,8 +4096,15 @@ function renderPage(route, now) {
         onNav: navTo,
       });
     }
-    case 'settings':
+    case 'settings': {
+      const circles = repo.getCircles();
+      const counts = circleCounts(repo.getAll(), circles);
+      const openCircle = (kind) => (id) => { editingCircleId = id; overlay = kind; render(); };
       return settingsScreen({
+        circles: circles.map((c) => ({ ...c, count: counts.get(c.id) })),
+        onAddCircle: () => { editingCircleId = null; overlay = 'addCircle'; render(); },
+        onRenameCircle: openCircle('renameCircle'),
+        onDeleteCircle: openCircle('deleteCircle'),
         onBack: () => go('/'),
         onSeedDemo: () => { seedDemo(repo); go('/'); },
         onReset: () => { overlay = 'erase'; render(); },
@@ -3735,6 +4126,7 @@ function renderPage(route, now) {
           orbit.setSpecGeometry(on);
         },
       });
+    }
     default:
       return null;
   }
@@ -3758,6 +4150,10 @@ async function exportBackup() {
 }
 
 function renderOverlays(route, now) {
+  if (route.name === 'settings' && ['addCircle', 'renameCircle', 'deleteCircle'].includes(overlay)) {
+    const layer = circleOverlay();
+    if (layer) return [layer];
+  }
   if (route.name === 'settings' && overlay === 'erase') {
     return [confirmDialog({
       title: 'Erase all data?',
@@ -3831,6 +4227,55 @@ function renderOverlays(route, now) {
     }));
   }
   return layers;
+}
+
+/**
+ * Settings -> Circles: the add or rename dialog, or the delete confirmation; null once the
+ * circle has gone (say, deleted in another tab). Each write re-renders through watchAll, so the
+ * overlay is cleared first and put back only when the name is refused (nothing was written).
+ */
+function circleOverlay() {
+  const close = () => { overlay = null; editingCircleId = null; render(); };
+  const attempt = (kind, write, message) => (name) => {
+    overlay = null;
+    try {
+      const done = message(write(name));
+      editingCircleId = null;
+      toast(done);
+      return null;
+    } catch (e) {
+      overlay = kind;
+      return e.message;
+    }
+  };
+  if (overlay === 'addCircle') {
+    return circleDialog({
+      title: 'New circle', confirm: 'Add', maxLength: CIRCLE_NAME_MAX, onCancel: close,
+      onSave: attempt('addCircle', (name) => repo.addCircle(name), (c) => `${c.name} added`),
+    });
+  }
+  const circle = repo.getCircles().find((c) => c.id === editingCircleId);
+  if (!circle) { overlay = null; editingCircleId = null; return null; }
+  if (overlay === 'renameCircle') {
+    return circleDialog({
+      title: `Rename ${circle.name}`, value: circle.name, confirm: 'Save', maxLength: CIRCLE_NAME_MAX, onCancel: close,
+      onSave: attempt('renameCircle', (name) => repo.renameCircle(circle.id, name), () => 'Circle renamed'),
+    });
+  }
+  const count = circleCounts(repo.getAll(), [circle]).get(circle.id);
+  return confirmDialog({
+    title: `Delete ${circle.name}?`,
+    body: count > 0
+      ? `${count} ${count === 1 ? 'person is' : 'people are'} taken out of this circle. Nobody leaves your orbit.`
+      : 'Nobody is in this circle.',
+    confirm: 'Delete',
+    onCancel: close,
+    onConfirm: () => {
+      overlay = null; editingCircleId = null;
+      repo.deleteCircle(circle.id);
+      toast(`${circle.name} deleted`);
+    },
+  });
 }
 
 /** The edit sheet for a logged catch-up on History, or its delete confirmation. */
