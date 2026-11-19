@@ -40,15 +40,32 @@ function usage(data) {
   return u;
 }
 
+// Compact goal for the editor button: "≥3h/wk", "≤8h/d".
+const goalShort = g => `${g.kind === 'min' ? '≥' : '≤'}${M.fmtDur(Math.round(g.hours * 60))}/${g.per === 'day' ? 'd' : 'wk'}`;
+
 // ---------- editor dialog ----------
 
 let bound = false;
+let goalOpen = null;   // id of the category whose goal row is open in the editor
 
 export function openCategories(app) {
   const dlg = $('#catDialog');
-  draw(app, dlg);
   if (!bound) { bind(app, dlg); bound = true; }
+  goalOpen = null;
+  draw(app, dlg);
   dlg.showModal();
+}
+
+// Goal editor row under a category: kind (none / at least / at most), hours, per day or week.
+function goalRowHTML(c) {
+  const g = c.goal || { kind: '', hours: '', per: 'week' };
+  const opt = (v, t, cur) => `<option value="${v}"${v === cur ? ' selected' : ''}>${t}</option>`;
+  return `<div class="goalrow">
+    <select class="gk" aria-label="Goal for ${esc(c.name)}">${opt('', 'No goal', g.kind)}${opt('min', 'At least', g.kind)}${opt('max', 'At most', g.kind)}</select>
+    <input type="number" class="gh" min="0.25" max="168" step="0.25" inputmode="decimal" value="${g.hours === '' ? '' : +g.hours.toFixed(2)}"
+      aria-label="Goal hours for ${esc(c.name)}" ${g.kind ? '' : 'disabled'}><span class="gu">h</span>
+    <select class="gp" aria-label="Goal period for ${esc(c.name)}" ${g.kind ? '' : 'disabled'}>${opt('day', 'a day', g.per)}${opt('week', 'a week', g.per)}</select>
+  </div>`;
 }
 
 function draw(app, dlg, focusSel) {
@@ -63,9 +80,12 @@ function draw(app, dlg, focusSel) {
         <input type="color" class="cc" value="${c.color.toLowerCase()}" aria-label="Colour of ${esc(c.name)}">
         <input type="text" class="cn" value="${esc(c.name)}" maxlength="40" aria-label="Name">
         <span class="use">${u[c.id] ? M.fmtDur(u[c.id].min) : ''}</span>
+        <button type="button" class="btn small goalbtn${c.goal ? ' set' : ''}" data-goal aria-expanded="${goalOpen === c.id}"
+          title="${c.goal ? esc('Goal: ' + M.goalLabel(c.goal)) : 'Set a goal'}" aria-label="${esc(`Goal for ${c.name}: ${c.goal ? M.goalLabel(c.goal) : 'none'}`)}">${c.goal ? goalShort(c.goal) : 'Goal'}</button>
         <button type="button" class="btn icon small" data-move="-1" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn icon small" data-move="1" aria-label="Move ${esc(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>↓</button>
         <button type="button" class="btn icon small danger" data-del aria-label="Delete ${esc(c.name)}">✕</button>
+        ${goalOpen === c.id ? goalRowHTML(c) : ''}
       </li>`).join('') || '<li class="none">No categories yet. Add one below.</li>'}
     </ul>
     <div class="addcat">
@@ -75,7 +95,7 @@ function draw(app, dlg, focusSel) {
     </div>
     <div class="swatches" aria-label="Preset colours">${M.PRESET_COLORS.map(c =>
       `<button type="button" data-swatch="${c}" style="--c:${c}" aria-label="Use ${c}"></button>`).join('')}</div>
-    <p class="hint">Times are totals across plan and actual. Deleting a category clears its tesserae.</p>
+    <p class="hint">Times are totals across plan and actual. Goals are checked against what actually happened. Deleting a category clears its tesserae.</p>
     <div class="modal-actions"><button class="btn primary" value="done">Done</button></div>
   </form>`;
   if (focusSel) dlg.querySelector(focusSel)?.focus();
@@ -90,6 +110,19 @@ function bind(app, dlg) {
     if (e.target.matches('.cc')) { cat(e.target).color = e.target.value.toUpperCase(); live(); }
   });
   dlg.addEventListener('change', e => {
+    if (e.target.matches('.gk, .gh, .gp')) {
+      const c = cat(e.target), row = e.target.closest('.goalrow');
+      const kind = row.querySelector('.gk').value;
+      if (!kind) delete c.goal;
+      else {
+        const hours = row.querySelector('.gh').value, per = row.querySelector('.gp').value;
+        const g = M.cleanGoal({ kind, hours: hours === '' ? (c.goal?.hours ?? 1) : hours, per });
+        if (g) c.goal = g;   // an out-of-range number keeps the goal as it was
+      }
+      app.saveMeta(); app.render();
+      draw(app, dlg, `li[data-id="${c.id}"] .${[...e.target.classList].find(k => /^g[khp]$/.test(k))}`);
+      return;
+    }
     const c = e.target.matches('.cc, .cn') && cat(e.target);
     if (!c) return;
     if (e.target.matches('.cn')) {
@@ -100,7 +133,7 @@ function bind(app, dlg) {
     app.render();
   });
   dlg.addEventListener('keydown', e => {
-    if (e.key !== 'Enter' || !e.target.matches('input[type=text]')) return;
+    if (e.key !== 'Enter' || !e.target.matches('input[type=text], input[type=number]')) return;
     e.preventDefault(); // don't submit (close) the form
     if (e.target.id === 'newName') add();
     else e.target.blur();
@@ -125,7 +158,10 @@ function bind(app, dlg) {
     const c = cat(b);
     if (!c) return;
     const list = app.data.categories, i = list.indexOf(c);
-    if (b.dataset.move) {
+    if (b.hasAttribute('data-goal')) {
+      goalOpen = goalOpen === c.id ? null : c.id;
+      draw(app, dlg, goalOpen ? `li[data-id="${c.id}"] .gk` : `li[data-id="${c.id}"] [data-goal]`);
+    } else if (b.dataset.move) {
       const j = i + +b.dataset.move;
       [list[i], list[j]] = [list[j], list[i]];
       list.forEach((x, k) => { x.order = k + 1; });

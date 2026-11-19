@@ -22,11 +22,54 @@ function bar(app, totals, span, label) {
   return `<div class="bar" role="img" aria-label="${esc(label)}">${segs}${rest > 0 ? `<i style="flex:${rest}"></i>` : ''}</div>`;
 }
 
+// ---------- goals ----------
+
+export const GOAL_ICON = { met: '✓', 'on-track': '→', missed: '✕' };
+export const GOAL_WORD = { met: 'met', 'on-track': 'on track', missed: 'missed' };
+
+// Actual minutes of category `id` on `key` (ghosts never count).
+export function catMinutes(app, key, id) {
+  const a = app.layerIfAny(key, 'actual');
+  return a ? M.minutesByCat(a, 1440 / a.length)[id] || 0 : 0;
+}
+
+// The goal's periods within `keys` for category c (see M.goalUnits).
+export const goalUnitsFor = (app, c, keys) =>
+  M.goalUnits(c.goal, keys, k => catMinutes(app, k, c.id), M.todayKey(), app.settings.weekStart);
+
+// Progress against each category goal over the dates in view, judged on actuals. A goal whose
+// period doesn't fit the view (a per-week goal on a single day) is left out.
+export function goalsHTML(app, keys) {
+  const rows = app.data.categories.filter(c => c.goal).map(c => {
+    const g = c.goal, units = goalUnitsFor(app, c, keys);
+    if (!units.length) return '';
+    const t = M.goalTally(units), target = Math.round(g.hours * 60) * units.length, m = t.minutes;
+    const scale = Math.max(target, m) * 1.15 || 1;
+    let text, status;
+    if (units.length === 1) {
+      status = units[0].status;
+      text = g.kind === 'max' && m > target ? `${M.fmtDur(m)}, ${M.fmtDur(m - target)} over` : `${M.fmtDur(m)} of ${M.fmtDur(target)}`;
+    } else {
+      const unit = g.per, n = units.length;
+      text = `${t.met} of ${n} ${unit}s met`;
+      status = null; // a tally has no single status: the counts say it in words
+      text += ['missed', 'on-track'].filter(s => t[s]).map(s => ` · ${t[s]} ${GOAL_WORD[s]}`).join('');
+    }
+    const label = `${c.name}: ${M.goalLabel(g)}. ${text}${status ? ', ' + GOAL_WORD[status] : ''}.`;
+    return `<li class="goal${status ? ' ' + status : ''}" data-goal-cat="${c.id}">
+      <div class="gline"><span class="gname"><i class="sw" style="--c:${app.color(c.id)}"></i>${esc(c.name)}</span><span class="gdesc">${esc(M.goalLabel(g))}</span></div>
+      <div class="gbar" role="img" aria-label="${esc(label)}"><b style="--c:${app.color(c.id)};width:${(100 * m / scale).toFixed(1)}%"></b><s style="left:${(100 * target / scale).toFixed(1)}%"></s></div>
+      <div class="gline"><span class="gtext">${esc(text)}</span>${status ? `<span class="gst ${status}">${GOAL_ICON[status]} ${GOAL_WORD[status]}</span>` : ''}</div>
+    </li>`;
+  }).join('');
+  return rows ? `<div class="goals"><span class="label">Goals</span><ul>${rows}</ul></div>` : '';
+}
+
 // keys: the dates covered; title: panel heading. In compare mode shows plan and actual together.
 export function statsHTML(app, keys, title, mode = app.ui.layer) {
   // Actuals over a period reaching into the future count only up to today, or to the last day
   // with data; otherwise empty future days would read as unlogged time. A plan covers the whole period.
-  const today = M.todayKey();
+  const today = M.todayKey(), allKeys = keys;   // goals judge whole periods themselves
   if (mode !== 'plan' && keys[keys.length - 1] > today) {
     const n = keys.findLastIndex(k => k <= today || app.day(k)) + 1;
     if (n > 0 && n < keys.length) { keys = keys.slice(0, n); title += ' so far'; }
@@ -47,6 +90,7 @@ export function statsHTML(app, keys, title, mode = app.ui.layer) {
       ${logged ? `<table class="stab"><thead><tr><th></th><th class="num">Time</th>${perHead}<th class="num">%</th></tr></thead><tbody>${rows}
         <tr class="faint"><td><i class="sw empty"></i>${none}</td><td class="num">${M.fmtDur(span - logged)}</td>${per(span - logged)}<td class="num">${pct(span - logged, span)}</td></tr>
       </tbody></table>` : `<p class="hint">Nothing painted on the ${layer} layer yet.</p>`}
+      ${layer === 'actual' ? goalsHTML(app, allKeys) : ''}
     </section>`;
   }
 
@@ -70,6 +114,7 @@ export function statsHTML(app, keys, title, mode = app.ui.layer) {
     <div class="barrow"><span class="label">Actual</span>${bar(app, a, span, 'actual time by category')}</div>
     ${rows ? `<table class="stab"><thead><tr><th></th><th class="num">Plan</th><th class="num">Actual</th><th class="num">Δ</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="hint">Nothing painted yet.</p>'}
     ${planned ? `<p class="hint">${M.fmtDur(matched)} of ${M.fmtDur(planned)} planned was spent as planned.</p>` : ''}
+    ${goalsHTML(app, allKeys)}
   </section>`;
 }
 

@@ -1,6 +1,7 @@
 // Week view: seven mini day mosaics side by side, plus the week's totals. Tap a day to open it.
 import * as M from '../model.js';
-import { statsHTML, totalsFor } from '../stats.js';
+import { statsHTML, totalsFor, goalUnitsFor, GOAL_ICON, GOAL_WORD } from '../stats.js';
+import { esc } from '../ui.js';
 import { setupCanvas, paintStyle, drawDay } from '../tiles.js';
 import { layerSegHTML, bindLayerSeg } from './day.js';
 
@@ -12,6 +13,9 @@ export const weekKeys = app => {
 export function renderWeek(app, root) {
   const keys = weekKeys(app), today = M.todayKey(), compare = app.ui.layer === 'compare';
   const layers = compare ? ['plan', 'actual'] : [app.ui.layer];
+  // Per-day goals, judged on actuals, marked under each day that has started (per-week goals are in the stats panel).
+  const dayGoals = app.ui.layer === 'plan' ? [] : app.data.categories.filter(c => c.goal?.per === 'day');
+  const marks = k => dayGoals.flatMap(c => goalUnitsFor(app, c, [k]).map(u => ({ c, s: u.status })));
   root.innerHTML = `<div class="dayview">
     <div class="maincol">
       <div class="layerrow">${layerSegHTML(app)}${app.ui.layer === 'actual' ? '' : '<button type="button" class="btn" data-baseline="" title="Edit the weekday baselines plans start from">Baselines</button>'}</div>
@@ -19,11 +23,14 @@ export function renderWeek(app, root) {
         // Compact per-day totals (rounded hours) so they fit narrow columns; the stats panel has exact figures.
         const short = m => (m >= 60 ? Math.round(m / 60) + 'h' : m + 'm');
         const d = M.parseKey(k), logged = layers.map(l => short(M.sumMinutes(totalsFor(app, [k], l))));
+        const gm = marks(k), said = gm.map(x => `${x.c.name} ${GOAL_WORD[x.s]}`).join(', ');
         return `<button type="button" class="wday${k === today ? ' today' : ''}${k === app.ui.date ? ' sel' : ''}" data-key="${k}"
-            aria-label="Open ${d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}">
+            aria-label="${esc(`Open ${d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}${said ? `. Goals: ${said}` : ''}`)}">
           <span class="wd"><b>${d.toLocaleDateString(undefined, { weekday: 'short' })}</b> ${d.getDate()}</span>
           <span class="cvs">${layers.map(l => `<canvas data-layer="${l}"></canvas>`).join('')}</span>
           <span class="wsum">${logged.join(' · ')}</span>
+          ${gm.length ? `<span class="wgoals" aria-hidden="true">${gm.map(x =>
+            `<i class="gm ${x.s}" style="--c:${app.color(x.c.id)}" title="${esc(`${x.c.name}: ${GOAL_WORD[x.s]}`)}">${GOAL_ICON[x.s]}</i>`).join('')}</span>` : ''}
         </button>`;
       }).join('')}</div>
       ${compare ? '<p class="hint">Each day shows plan on the left and actual on the right.</p>' : ''}

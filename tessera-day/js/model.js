@@ -26,7 +26,7 @@ export function newId() {
 
 export function starterData() {
   return {
-    version: 2,
+    version: 3,
     settings: { ...DEFAULT_SETTINGS },
     categories: STARTER.map(([name, color], i) => ({ id: newId(), name, color, order: i + 1 })),
     baselines: [],
@@ -173,6 +173,57 @@ export function matchStats(plan, actual, q) {
   return { planned, matched, pct: planned ? Math.round(100 * matched / planned) : null };
 }
 
+// ---------- category goals ----------
+// A category may carry goal: { kind: 'min' | 'max', hours, per: 'day' | 'week' }. Goals are judged
+// on actual minutes only (callers pass app.layerIfAny actuals, so ghosts never count).
+
+export const GOAL_KINDS = ['min', 'max'];
+export const GOAL_PERS = ['day', 'week'];
+
+// A valid goal (hours rounded to the minute, at most the length of its period), or null.
+export function cleanGoal(g) {
+  if (!g || typeof g !== 'object' || !GOAL_KINDS.includes(g.kind) || !GOAL_PERS.includes(g.per)) return null;
+  const hours = Math.round(+g.hours * 60) / 60;
+  return Number.isFinite(hours) && hours > 0 && hours <= (g.per === 'day' ? 24 : 168) ? { kind: g.kind, hours, per: g.per } : null;
+}
+
+export const goalLabel = g => `${g.kind === 'min' ? 'at least' : 'at most'} ${fmtDur(Math.round(g.hours * 60))} a ${g.per}`;
+
+// One period of a goal: 'met' or 'missed' once it has ended; while it runs, a max goal already
+// exceeded is missed, a min goal already reached is met, and anything else is 'on-track'.
+export function goalStatus(kind, targetMin, minutes, ended) {
+  if (kind === 'max') return minutes > targetMin ? 'missed' : ended ? 'met' : 'on-track';
+  return minutes >= targetMin ? 'met' : ended ? 'missed' : 'on-track';
+}
+
+// The goal's periods within `keys` (the dates in view, in order) that have started by `today`:
+// days for a per-day goal; whole weeks (by weekStart) lying inside `keys` for a per-week goal.
+// minutesOn(key) gives the category's actual minutes that day.
+// Returns [{ from, to, minutes, ended, status }].
+export function goalUnits(goal, keys, minutesOn, today, weekStart) {
+  const target = Math.round(goal.hours * 60), out = [];
+  const unit = (days) => {
+    const from = days[0], to = days[days.length - 1];
+    if (from > today) return;
+    const minutes = days.reduce((a, k) => a + minutesOn(k), 0), ended = to < today;
+    out.push({ from, to, minutes, ended, status: goalStatus(goal.kind, target, minutes, ended) });
+  };
+  if (goal.per === 'day') { for (const k of keys) unit([k]); return out; }
+  const inView = new Set(keys);
+  for (const k of keys) {
+    if (weekStartOf(k, weekStart) !== k) continue;
+    const week = Array.from({ length: 7 }, (_, i) => addDays(k, i));
+    if (week.every(d => inView.has(d))) unit(week);
+  }
+  return out;
+}
+
+export function goalTally(units) {
+  const t = { met: 0, missed: 0, 'on-track': 0, minutes: 0 };
+  for (const u of units) { t[u.status]++; t.minutes += u.minutes; }
+  return t;
+}
+
 // ---------- validation (load / import) ----------
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -196,6 +247,7 @@ export function normalize(raw) {
         name: String(c.name ?? '').trim().slice(0, 40) || 'Untitled',
         color: HEX.test(c.color) ? c.color.toUpperCase() : PRESET_COLORS[i % PRESET_COLORS.length],
         order: Number.isFinite(+c.order) ? +c.order : i + 1,
+        ...(cleanGoal(c.goal) ? { goal: cleanGoal(c.goal) } : {}),
       }))
       .sort((a, b) => a.order - b.order)
       .map((c, i) => ({ ...c, order: i + 1 }));
@@ -232,5 +284,5 @@ export function normalize(raw) {
     if (!isEmptyDay(day)) days[k] = day;
   }
 
-  return { version: 2, settings, categories, baselines, days };
+  return { version: 3, settings, categories, baselines, days };
 }

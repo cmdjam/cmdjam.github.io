@@ -4,7 +4,7 @@
 // whole, so files from different releases never mix.
 // A new version waits until the page asks it to take over (its "new version" banner), so a
 // release never swaps out under a page that is still running the old code.
-const VERSION = 'tessera-day-e963b0637383';
+const VERSION = 'tessera-day-f0c950865017';
 const ASSETS = [
   './',
   'index.html',
