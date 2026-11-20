@@ -187,3 +187,7 @@ body.scoreboard .topnav{display:none;}
 body.scoreboard .brand{cursor:default;}
 .scoreboard-view .player-head h2{font-size:24px;}
 .sb-rule{font-size:20px;}
+
+/* Parent PIN */
+.lock .row{justify-content:center;}
+.pin-input{width:8ch;max-width:100%;text-align:center;letter-spacing:.3em;font-size:20px;}

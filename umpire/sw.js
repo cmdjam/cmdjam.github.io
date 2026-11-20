@@ -5,13 +5,14 @@
 // deleted on activate. Each version is served whole, so files from different releases never mix.
 // A new version waits until the page asks it to take over (its "new version" banner), so a
 // release never swaps out under a page that is still running the old code.
-const VERSION = 'umpire-2546a8c58f1c';
+const VERSION = 'umpire-ee0d29d7b13b';
 const ASSETS = [
   './',
   'index.html',
   'manifest.webmanifest',
   'css/app.css',
   'js/app.js',
+  'js/pin.js',
   'js/rules.js',
   'js/store.js',
   'js/ui.js',

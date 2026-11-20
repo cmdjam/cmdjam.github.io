@@ -5,8 +5,10 @@
 //   #/players          add, rename, recolour, remove players
 //   #/settings         theme, backup (JSON export and import) and the app version
 //   #/board/<childId>  a child's read-only scoreboard (no actions, no links back)
+// With a parent PIN set (js/pin.js), every route but a scoreboard asks for it before rendering.
 import * as R from './rules.js';
 import { load, save, normalize, uid, COLOURS } from './store.js';
+import { PIN_KEY, isPin, makePin, checkPin, loadPin, savePin, needsPin, unlockedAfterRoute, relockOnReturn } from './pin.js';
 import { h, fmtDate, fmtDateTime, localInputValue, plural, strikeMarks, nextLine, callLadder } from './ui.js';
 
 let data = load();
@@ -48,6 +50,84 @@ darkMQ.addEventListener('change', applyTheme);
 
 // "1.2.0 (0123456789ab)": package.json's version and the commit, stamped by the deploy; "dev" locally.
 const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || 'dev';
+
+// ---- Parent PIN -------------------------------------------------------------------------
+
+// The PIN record lives under umpire-pin, per device (see js/pin.js). The app starts locked, locks
+// again after LOCK_AFTER in the background, and opening a scoreboard locks it too.
+let pinRecord = loadPin();
+let unlocked = false;
+let hiddenAt = 0;
+
+const PIN_NOTE = 'The PIN is a privacy screen, not encryption: anyone with the browser\'s developer tools can still read the data. '
+  + 'A forgotten PIN can only be cleared by clearing this site\'s data in the browser, which deletes everything here (and the other apps on this site), so download a backup first.';
+
+const pinInput = (name, label) => h('label', null, label, h('input', {
+  name, type: 'password', inputmode: 'numeric', pattern: '[0-9]{4}', minLength: 4, maxLength: 4, required: true, autocomplete: 'off', class: 'pin-input',
+}));
+
+// Hashing needs crypto.subtle (a secure context); report rather than throw if it is missing.
+async function safely(fn) {
+  try { return await fn(); } catch (e) { toast(e.message || 'Could not check the PIN'); return null; }
+}
+
+async function setPin() {
+  const fd = await ask(pinRecord ? 'Change PIN' : 'Set a parent PIN', [
+    h('p', { class: 'muted small' }, 'Everything except the scoreboards will ask for this 4-digit PIN. ' + PIN_NOTE),
+    pinRecord ? pinInput('current', 'Current PIN') : null,
+    pinInput('pin', pinRecord ? 'New PIN' : 'PIN'),
+    pinInput('repeat', 'PIN again'),
+  ], 'Save PIN');
+  if (!fd) return;
+  const [current, pin, repeat] = ['current', 'pin', 'repeat'].map(k => String(fd.get(k) ?? ''));
+  if (pinRecord && !(await safely(() => checkPin(current, pinRecord)))) { toast('The current PIN is wrong'); return; }
+  if (!isPin(pin)) { toast('A PIN is 4 digits'); return; }
+  if (pin !== repeat) { toast('The two PINs differ'); return; }
+  const record = await safely(() => makePin(pin));
+  if (!record) return;
+  if (!savePin(record)) { toast('Could not save the PIN: browser storage is full or blocked'); return; }
+  pinRecord = record;
+  unlocked = true;
+  render();
+  toast('PIN saved');
+}
+
+async function removePin() {
+  const fd = await ask('Turn off the PIN', [
+    h('p', { class: 'muted small' }, 'Anyone holding this device will be able to reach every view again.'),
+    pinInput('current', 'Current PIN'),
+  ], 'Turn off', 'danger');
+  if (!fd) return;
+  if (!(await safely(() => checkPin(String(fd.get('current')), pinRecord)))) { toast('That PIN is wrong'); return; }
+  if (!savePin(null)) { toast('Could not remove the PIN: browser storage is blocked'); return; }
+  pinRecord = null;
+  render();
+  toast('PIN turned off');
+}
+
+function lockNow() {
+  unlocked = false;
+  render();
+}
+
+// Shown in place of any view that needs the PIN; the address stays, so unlocking opens it.
+function lockView() {
+  const input = h('input', { type: 'password', inputmode: 'numeric', pattern: '[0-9]{4}', maxLength: 4, required: true, autocomplete: 'off', class: 'pin-input', 'aria-label': 'PIN' });
+  const onsubmit = async e => {
+    e.preventDefault();
+    const ok = await safely(() => checkPin(input.value, pinRecord));
+    if (ok) { unlocked = true; app.dataset.route = ''; render(); return; }
+    if (ok === false) toast('Wrong PIN');
+    input.value = '';
+    input.focus();
+  };
+  setTimeout(() => input.focus());
+  return h('form', { class: 'card empty lock stack', onsubmit },
+    h('h2', null, 'Parents only'),
+    h('p', { class: 'muted' }, 'Enter the PIN to continue.'),
+    h('div', { class: 'row' }, input, h('button', { class: 'primary' }, 'Unlock')),
+  );
+}
 
 // ---- Toast and dialogs ------------------------------------------------------------------
 
@@ -433,6 +513,16 @@ function settingsView() {
         h('button', { 'aria-pressed': String(theme === v), onclick: () => setTheme(v) }, label)))),
     ),
     h('section', { class: 'card stack' },
+      h('h2', null, 'Parent PIN'),
+      h('p', { class: 'small muted', style: { margin: 0 } }, pinRecord
+        ? 'A PIN is set on this device. Everything except the scoreboards asks for it, on launch and after 5 minutes away.'
+        : 'Optional: set a 4-digit PIN so a child holding this device can see their scoreboard but not reach the parent views.'),
+      h('p', { class: 'small muted', style: { margin: 0 } }, PIN_NOTE),
+      h('div', { class: 'row' }, pinRecord
+        ? [h('button', { onclick: setPin }, 'Change PIN…'), h('button', { onclick: lockNow }, 'Lock now'), h('button', { class: 'danger', onclick: removePin }, 'Turn off…')]
+        : h('button', { class: 'primary', onclick: setPin }, 'Set a PIN…')),
+    ),
+    h('section', { class: 'card stack' },
       h('h2', null, 'Backup'),
       h('p', { class: 'small muted', style: { margin: 0 } }, 'Everything is stored in this browser only. Export a backup to keep it safe or move it to another device.'),
       h('div', { class: 'row' }, h('button', { class: 'primary', onclick: download }, 'Download backup'), h('button', { onclick: copy }, 'Copy backup')),
@@ -450,10 +540,23 @@ function settingsView() {
 
 function render() {
   const [, view, id] = (location.hash || '#/').split('/');
-  // Re-rendering a form would drop what is being typed, so forms render once per visit.
-  if ((view === 'edit' || view === 'new') && app.dataset.route === location.hash) return;
   let out;
   const scoreboard = view === 'board' && !!child(id);
+  const route = { hasPin: !!pinRecord, unlocked, view, boardOk: scoreboard };
+  unlocked = unlockedAfterRoute(route);
+  if (needsPin(route)) {
+    // The PIN screen keeps the top bar closed, and re-renders keep what is being typed.
+    setScoreboardChrome(true);
+    if (app.dataset.route === 'lock:' + location.hash) return;
+    if (dialog.open) dialog.close('');
+    app.dataset.route = 'lock:' + location.hash;
+    app.replaceChildren(lockView());
+    return;
+  }
+  // Re-rendering a form would drop what is being typed, so forms render once per visit. This comes
+  // after the PIN check, so locking (Lock now, the background relock, a PIN change elsewhere)
+  // always replaces an open form.
+  if ((view === 'edit' || view === 'new') && app.dataset.route === location.hash) return;
   setScoreboardChrome(scoreboard);
   if (scoreboard) out = scoreboardView(child(id));
   else if (view === 'rule' && rule(id)) out = ruleView(rule(id));
@@ -478,9 +581,17 @@ function setScoreboardChrome(on) {
 window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
 // Strikes expire with time, so keep the counts current while the app stays open.
 setInterval(() => { if (!dialog.open && document.visibilityState === 'visible') render(); }, 60_000);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') render(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (relockOnReturn(hiddenAt, Date.now())) unlocked = false;
+  hiddenAt = 0;
+  render();
+});
 // Another tab saved: pick up its data.
-window.addEventListener('storage', () => { data = load(); theme = savedTheme(); applyTheme(); render(); });
+window.addEventListener('storage', e => {
+  if (e.key === PIN_KEY || e.key === null) { const was = pinRecord; pinRecord = loadPin(); if (!was || !pinRecord || was.hash !== pinRecord.hash) unlocked = false; }
+  data = load(); theme = savedTheme(); applyTheme(); render();
+});
 render();
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
