@@ -8,7 +8,7 @@
 // With a parent PIN set (js/pin.js), every route but a scoreboard asks for it before rendering.
 import * as R from './rules.js';
 import { load, save, normalize, uid, COLOURS } from './store.js';
-import { PIN_KEY, isPin, makePin, checkPin, loadPin, savePin, needsPin, unlockedAfterRoute, relockOnReturn } from './pin.js';
+import { PIN_KEY, isPin, makePin, checkPin, loadPin, savePin, needsPin, unlockedAfterRoute, relockOnReturn, NO_TRIES, afterWrongPin, pinBlocked } from './pin.js';
 import { h, fmtDate, fmtDateTime, localInputValue, plural, strikeMarks, nextLine, callLadder } from './ui.js';
 
 let data = load();
@@ -57,6 +57,8 @@ const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content 
 // again after LOCK_AFTER in the background, and opening a scoreboard locks it too.
 let pinRecord = loadPin();
 let unlocked = false;
+// Wrong-PIN tries: module level, so a rebuilt lock screen (hash change, Lock now) keeps the delay.
+let pinTries = NO_TRIES;
 let hiddenAt = 0;
 
 const PIN_NOTE = 'The PIN is a privacy screen, not encryption: anyone with the browser\'s developer tools can still read the data. '
@@ -113,19 +115,34 @@ function lockNow() {
 // Shown in place of any view that needs the PIN; the address stays, so unlocking opens it.
 function lockView() {
   const input = h('input', { type: 'password', inputmode: 'numeric', pattern: '[0-9]{4}', maxLength: 4, required: true, autocomplete: 'off', class: 'pin-input', 'aria-label': 'PIN' });
+  const button = h('button', { class: 'primary' }, 'Unlock');
+  const wait = h('p', { class: 'small muted', role: 'status', hidden: true }, 'Too many wrong PINs. Try again in a few seconds.');
+  // Disables entry while a delay runs, and re-enables (and refocuses) it when the delay ends.
+  const applyThrottle = () => {
+    const blocked = pinBlocked(pinTries, Date.now());
+    input.disabled = button.disabled = blocked;
+    wait.hidden = !blocked;
+    if (blocked) setTimeout(applyThrottle, pinTries.blockedUntil - Date.now() + 50);
+    else if (input.isConnected) input.focus();
+  };
   const onsubmit = async e => {
     e.preventDefault();
+    if (pinBlocked(pinTries, Date.now())) return;
     const ok = await safely(() => checkPin(input.value, pinRecord));
-    if (ok) { unlocked = true; app.dataset.route = ''; render(); return; }
-    if (ok === false) toast('Wrong PIN');
+    if (ok) { pinTries = NO_TRIES; unlocked = true; app.dataset.route = ''; render(); return; }
     input.value = '';
-    input.focus();
+    if (ok === false) {
+      pinTries = afterWrongPin(pinTries, Date.now());
+      if (!pinBlocked(pinTries, Date.now())) toast('Wrong PIN');
+    }
+    applyThrottle();
   };
-  setTimeout(() => input.focus());
+  setTimeout(applyThrottle);
   return h('form', { class: 'card empty lock stack', onsubmit },
     h('h2', null, 'Parents only'),
     h('p', { class: 'muted' }, 'Enter the PIN to continue.'),
-    h('div', { class: 'row' }, input, h('button', { class: 'primary' }, 'Unlock')),
+    h('div', { class: 'row' }, input, button),
+    wait,
   );
 }
 

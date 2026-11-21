@@ -69,3 +69,19 @@ export function unlockedAfterRoute({ hasPin, unlocked, view, boardOk }) {
 
 /** Whether returning to the app after being hidden since `hiddenAt` locks it again. */
 export const relockOnReturn = (hiddenAt, now) => !!hiddenAt && now - hiddenAt > LOCK_AFTER;
+
+// Wrong-PIN throttle: after PIN_TRIES wrong PINs in a row, entry is blocked for PIN_DELAY, and each
+// further wrong PIN blocks it again (the delay stays short and doesn't grow). A correct PIN resets
+// it. Kept in memory only: this makes guessing a 4-digit PIN tedious, nothing more.
+export const PIN_TRIES = 3;
+export const PIN_DELAY = 5 * 1000;
+export const NO_TRIES = Object.freeze({ wrong: 0, blockedUntil: 0 });
+
+/** The throttle state after a wrong PIN at `now`. */
+export function afterWrongPin(state, now) {
+  const wrong = (state?.wrong || 0) + 1;
+  return { wrong, blockedUntil: wrong >= PIN_TRIES ? now + PIN_DELAY : 0 };
+}
+
+/** Whether PIN entry is blocked at `now`. */
+export const pinBlocked = (state, now) => !!state && state.blockedUntil > now;

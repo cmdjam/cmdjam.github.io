@@ -5,7 +5,7 @@
 // deleted on activate. Each version is served whole, so files from different releases never mix.
 // A new version waits until the page asks it to take over (its "new version" banner), so a
 // release never swaps out under a page that is still running the old code.
-const VERSION = 'umpire-ee0d29d7b13b';
+const VERSION = 'umpire-a0c4e067be7e';
 const ASSETS = [
   './',
   'index.html',
